@@ -566,7 +566,7 @@ $form.Controls.Add($btnNone)
 # --- Backup-Option ---
 $chkBackup = New-Object System.Windows.Forms.CheckBox
 $chkBackup.Text = "Vor Aenderung Backup-Kopie erstellen"
-$chkBackup.Location = '300,384'; $chkBackup.AutoSize = $true; $chkBackup.Checked = $true
+$chkBackup.Location = '410,380'; $chkBackup.AutoSize = $true; $chkBackup.Checked = $true
 $chkBackup.Anchor = 'Bottom,Right'
 $form.Controls.Add($chkBackup)
 
