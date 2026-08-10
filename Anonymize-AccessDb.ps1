@@ -248,13 +248,15 @@ function Invoke-Obfuscation {
             }
         }
 
-        # Nur beschreibbare, gueltige Spalten behalten
+        # Nur echte Autowert-/RowID-Spalten ausschliessen. Das Attribut
+        # 'adFldUpdatable' wird von ACE oft als 'adFldUnknownUpdatable' (8)
+        # gemeldet - dann NICHT vorab aussortieren, sondern das Schreiben
+        # versuchen und nur bei echtem Fehler ueberspringen.
         $targets = @()
         foreach ($c in $ColumnsToObfuscate) {
             if (-not $meta.ContainsKey($c)) { continue }
             $attr = $meta[$c].Attributes
             if (($attr -band $adFldRowID) -ne 0) { & $Log "  '$c' uebersprungen (Autowert/RowID)."; continue }
-            if (($attr -band $adFldUpdatable) -eq 0) { & $Log "  '$c' uebersprungen (nicht beschreibbar)."; continue }
             $targets += $c
         }
 
