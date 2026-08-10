@@ -219,6 +219,40 @@ function Get-AccessColumns {
     $cols
 }
 
+# Ermittelt ueber das DB-Schema, welche Spalten SCHREIBGESCHUETZT sind
+# (Autowert / AutoNumber, berechnete Felder). Diese koennen von Access nicht
+# aktualisiert werden und muessen von der Anonymisierung ausgenommen werden.
+# Grundlage: COLUMN_FLAGS (DBCOLUMNFLAGS) aus adSchemaColumns.
+function Get-ReadOnlyColumns {
+    param($Conn, [string]$Table)
+
+    $DBCOLUMNFLAGS_WRITE        = 0x00000004
+    $DBCOLUMNFLAGS_WRITEUNKNOWN = 0x00000008
+    $DBCOLUMNFLAGS_ISROWID      = 0x00000100   # Autowert / RowID
+
+    $readonly = @{}
+    $adSchemaColumns = 4
+    try {
+        # Restriktionen: [Katalog, Schema, Tabellenname, Spaltenname]
+        $rest = @($null, $null, $Table, $null)
+        $rs = $Conn.OpenSchema($adSchemaColumns, $rest)
+        while (-not $rs.EOF) {
+            $name  = [string]$rs.Fields.Item('COLUMN_NAME').Value
+            $flags = 0
+            try { $flags = [int64]$rs.Fields.Item('COLUMN_FLAGS').Value } catch {}
+            $writable = ((($flags -band $DBCOLUMNFLAGS_WRITE) -ne 0) -or
+                         (($flags -band $DBCOLUMNFLAGS_WRITEUNKNOWN) -ne 0)) -and
+                        (($flags -band $DBCOLUMNFLAGS_ISROWID) -eq 0)
+            if (-not $writable) { $readonly[$name] = $true }
+            $rs.MoveNext()
+        }
+        $rs.Close()
+    } catch {
+        # Schema nicht verfuegbar -> leere Liste (Fallback auf Laufzeit-Erkennung)
+    }
+    $readonly
+}
+
 # ------------------------------------------------------------------------
 # Kernfunktion: ausgewaehlte (nicht angekreuzte) Spalten verschleiern
 # ------------------------------------------------------------------------
@@ -248,15 +282,16 @@ function Invoke-Obfuscation {
             }
         }
 
-        # Nur echte Autowert-/RowID-Spalten ausschliessen. Das Attribut
-        # 'adFldUpdatable' wird von ACE oft als 'adFldUnknownUpdatable' (8)
-        # gemeldet - dann NICHT vorab aussortieren, sondern das Schreiben
-        # versuchen und nur bei echtem Fehler ueberspringen.
+        # Schreibgeschuetzte Spalten (Autowert/berechnet) vorab per Schema
+        # ermitteln - diese kann Access grundsaetzlich nicht aktualisieren.
+        $readonly = Get-ReadOnlyColumns -Conn $conn -Table $Table
+
         $targets = @()
         foreach ($c in $ColumnsToObfuscate) {
             if (-not $meta.ContainsKey($c)) { continue }
             $attr = $meta[$c].Attributes
             if (($attr -band $adFldRowID) -ne 0) { & $Log "  '$c' uebersprungen (Autowert/RowID)."; continue }
+            if ($readonly.ContainsKey($c))       { & $Log "  '$c' uebersprungen (nicht aktualisierbar, z.B. Autowert/berechnet)."; continue }
             $targets += $c
         }
 
@@ -264,14 +299,25 @@ function Invoke-Obfuscation {
 
         & $Log ("Anonymisiere Spalten: " + ($targets -join ', '))
 
+        # Spalten, die zur Laufzeit doch nicht schreibbar sind, hier merken,
+        # damit die Meldung nur EINMAL erscheint (nicht pro Datensatz).
+        $failed = @{}
         $rowCount = 0
         while (-not $rs.EOF) {
+            $changed = $false
             foreach ($c in $targets) {
+                if ($failed.ContainsKey($c)) { continue }
                 $field = $rs.Fields.Item($c)
                 $new = Get-ObfuscatedValue -OriginalValue $field.Value -DataType $meta[$c].Type -MaxLen $meta[$c].MaxLen -ColumnName $c
-                try { $field.Value = $new } catch { & $Log "  Zeile $rowCount, Spalte '$c': Wert konnte nicht gesetzt werden ($($_.Exception.Message))." }
+                try { $field.Value = $new; $changed = $true }
+                catch {
+                    $failed[$c] = $true
+                    & $Log "  '$c' uebersprungen (Feld nicht aktualisierbar)."
+                }
             }
-            $rs.Update()
+            if ($changed) {
+                try { $rs.Update() } catch { try { $rs.CancelUpdate() } catch {} }
+            }
             $rowCount++
             $rs.MoveNext()
         }
@@ -421,9 +467,17 @@ $cmbTable.Add_SelectedIndexChanged({
     try {
         $conn = New-AccessConnection -Path $path
         try {
-            $cols = Get-AccessColumns -Conn $conn -Table $table
-            foreach ($c in $cols) { [void]$clbColumns.Items.Add($c, $false) }  # standardmaessig NICHT angekreuzt
-            & $Log "Tabelle '$table': $($cols.Count) Spalte(n) geladen."
+            $cols     = Get-AccessColumns -Conn $conn -Table $table
+            $readonly = Get-ReadOnlyColumns -Conn $conn -Table $table
+            $roCount  = 0
+            foreach ($c in $cols) {
+                # Schreibgeschuetzte Spalten (Autowert/berechnet) automatisch
+                # ankreuzen -> bleiben unveraendert; alle anderen offen lassen.
+                $isRo = $readonly.ContainsKey($c)
+                [void]$clbColumns.Items.Add($c, $isRo)
+                if ($isRo) { $roCount++ }
+            }
+            & $Log "Tabelle '$table': $($cols.Count) Spalte(n) geladen ($roCount schreibgeschuetzt, autom. angekreuzt)."
         } finally { $conn.Close(); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($conn) | Out-Null }
     } catch { & $Log "Fehler beim Laden der Spalten: $($_.Exception.Message)" }
 })
