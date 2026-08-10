@@ -313,24 +313,22 @@ function Invoke-ObfuscationByPk {
     $cmd = New-Object -ComObject ADODB.Command
     $cmd.ActiveConnection = $Conn
     $cmd.CommandText = "UPDATE [$Table] SET $setClause WHERE $whereClause"
-    foreach ($c in $realTargets) { [void]$cmd.Parameters.Append($cmd.CreateParameter($c, $Meta[$c].Type, $adParamInput, (Get-ParamSize $Meta[$c]), [System.DBNull]::Value)) }
-    foreach ($k in $Pk)          { [void]$cmd.Parameters.Append($cmd.CreateParameter($k, $Meta[$k].Type, $adParamInput, (Get-ParamSize $Meta[$k]), [System.DBNull]::Value)) }
+    foreach ($c in $realTargets) { [void]$cmd.Parameters.Append($cmd.CreateParameter("p_$c", $Meta[$c].Type, $adParamInput, (Get-ParamSize $Meta[$c]), [System.DBNull]::Value)) }
+    foreach ($k in $Pk)          { [void]$cmd.Parameters.Append($cmd.CreateParameter("k_$k", $Meta[$k].Type, $adParamInput, (Get-ParamSize $Meta[$k]), [System.DBNull]::Value)) }
     try { $cmd.Prepared = $true } catch {}
 
     $rowCount = 0
     foreach ($row in $rows) {
-        $i = 0
+        # Parameter ueber ihren Namen (Spaltenname) ansprechen - kein Zahlen-Index
         foreach ($c in $realTargets) {
             $new = Get-ObfuscatedValue -OriginalValue $row.Cur[$c] -DataType $Meta[$c].Type -MaxLen $Meta[$c].MaxLen -ColumnName $c
             if ($new -is [string] -and $Meta[$c].MaxLen -gt 0 -and $new.Length -gt $Meta[$c].MaxLen) { $new = $new.Substring(0, $Meta[$c].MaxLen) }
-            $cmd.Parameters.Item($i).Value = $new
-            $i++
+            $cmd.Parameters.Item("p_$c").Value = $new
         }
         foreach ($k in $Pk) {
             $kv = $row.Key[$k]
             if ($null -eq $kv) { $kv = [System.DBNull]::Value }
-            $cmd.Parameters.Item($i).Value = $kv
-            $i++
+            $cmd.Parameters.Item("k_$k").Value = $kv
         }
         try { $null = $cmd.Execute() ; $rowCount++ }
         catch { & $Log "  Datensatz uebersprungen (Update-Fehler: $($_.Exception.Message))." }
