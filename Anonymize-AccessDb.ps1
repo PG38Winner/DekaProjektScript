@@ -1,13 +1,14 @@
 <#
 .SYNOPSIS
-    Liest eine Microsoft-Access-Datenbank (.accdb / .mdb) und anonymisiert
-    ("verschleiert") ausgewaehlte Spalten mit personenbezogenen Daten.
+    Liest eine Microsoft-Access-Datenbank (.accdb / .mdb) ODER eine Excel-Datei
+    (.xlsx / .xlsm / .xlsb / .xls) und anonymisiert ("verschleiert") ausgewaehlte
+    Spalten mit personenbezogenen Daten.
 
 .DESCRIPTION
     Das Script oeffnet eine grafische Oberflaeche (WinForms):
 
-      1. Access-Datei auswaehlen  (Datei-Dialog)
-      2. Tabelle auswaehlen        (Dropdown)
+      1. Access- oder Excel-Datei auswaehlen  (Datei-Dialog)
+      2. Tabelle bzw. Arbeitsblatt auswaehlen  (Dropdown)
       3. Spalten werden in einer Checkbox-Liste angezeigt
 
     Logik der Auswahl:
@@ -17,18 +18,23 @@
     Die Anonymisierung erfolgt typ-abhaengig:
       * Text        -> je nach Inhalt E-Mail / Telefon / Name / generischer Text
       * Zahl        -> zufaelliger Wert in aehnlicher Groessenordnung
-      * Datum       -> um zufaellige Tage verschoben
+      * Datum       -> um zufaellige Tage verschoben (Access) bzw. verschleiert (Excel)
       * Ja/Nein     -> zufaelliger Boolescher Wert
 
-    Vor jeder Aenderung wird automatisch eine Backup-Kopie der Datenbank
-    angelegt (kann in der GUI deaktiviert werden).
+    Zwei Engines:
+      * Access -> ADODB/ACE-OLEDB, Schreiben ueber editierbaren Server-Cursor.
+      * Excel  -> Excel-COM-Automation (Kopfzeile = erste Zeile = Spaltennamen).
+
+    Vor jeder Aenderung wird automatisch eine Backup-Kopie der Datei angelegt
+    (kann in der GUI deaktiviert werden).
 
 .REQUIREMENTS
     * Windows mit Windows PowerShell 5.1 (WinForms / COM).
-    * "Microsoft Access Database Engine" (ACE OLEDB Provider).
+    * Fuer Access: "Microsoft Access Database Engine" (ACE OLEDB Provider).
       Wichtig: Die Bit-Version (32/64) des Providers muss zur PowerShell-
       Bit-Version passen. Fuer .accdb i. d. R. Microsoft.ACE.OLEDB.12.0
       oder .16.0. Fuer alte .mdb ggf. Microsoft.Jet.OLEDB.4.0 (nur 32-Bit).
+    * Fuer Excel: installiertes Microsoft Excel (COM-Automation).
 
 .NOTES
     Nur auf Kopien / mit Backup ausfuehren. Die Aenderungen sind endgueltig.
@@ -106,7 +112,55 @@ function New-FakeText {
     $text
 }
 
-# Liefert einen anonymisierten Wert passend zum Feldtyp / Inhalt
+# Kuerzt einen Text auf die (optionale) Maximallaenge.
+function Limit-Length { param([string]$Value,[int]$MaxLen) if ($MaxLen -gt 0 -and $Value.Length -gt $MaxLen) { return $Value.Substring(0,$MaxLen) }; $Value }
+
+# Anonymisiert einen Text-Wert (E-Mail / Telefon / Name / generisch).
+# Wird sowohl vom Access- als auch vom Excel-Pfad verwendet.
+function Get-ObfuscatedString {
+    param([string]$OriginalValue, [string]$ColumnName, [int]$MaxLen = 0)
+
+    if (Test-LooksLikeEmail $OriginalValue) { return (Limit-Length (New-FakeEmail) $MaxLen) }
+    if (Test-LooksLikePhone $OriginalValue) { return (Limit-Length (New-FakePhone) $MaxLen) }
+
+    $lc = ([string]$ColumnName).ToLower()
+    switch -Regex ($lc) {
+        'vorname|firstname|first_name'     { return (Limit-Length (Get-RandomFrom $script:Vornamen)  $MaxLen) }
+        'nachname|lastname|last_name|name' { return (Limit-Length (Get-RandomFrom $script:Nachnamen) $MaxLen) }
+        'strasse|street|adresse|address'   { return (Limit-Length ("{0} {1}" -f (Get-RandomFrom $script:Strassen), $script:Rnd.Next(1,199)) $MaxLen) }
+        'ort|stadt|city'                   { return (Limit-Length (Get-RandomFrom $script:Staedte)   $MaxLen) }
+        'plz|zip|postal'                   { return ("{0:D5}" -f $script:Rnd.Next(1000,99999)) }
+        default                            { return (New-FakeText -MaxLen $MaxLen) }
+    }
+}
+
+# Liefert einen anonymisierten Wert anhand des .NET-Typs (fuer Excel-Zellen,
+# wo keine OLE-DB-Typinformation vorliegt).
+function Get-ObfuscatedValueGeneric {
+    param($Value, [string]$ColumnName)
+
+    if ($null -eq $Value) { return $Value }
+
+    if ($Value -is [string]) {
+        if (([string]$Value).Trim().Length -eq 0) { return $Value }
+        return (Get-ObfuscatedString -OriginalValue ([string]$Value) -ColumnName $ColumnName -MaxLen 0)
+    }
+    if ($Value -is [datetime]) { return ([datetime]$Value).AddDays($script:Rnd.Next(-365,365)) }
+    if ($Value -is [bool])     { return [bool]($script:Rnd.Next(0,2)) }
+    if ($Value -is [double] -or $Value -is [single] -or $Value -is [decimal] -or
+        $Value -is [int] -or $Value -is [int64] -or $Value -is [int16] -or $Value -is [byte]) {
+        $d = [double]$Value
+        $mag = [Math]::Max(10.0, [Math]::Abs($d))
+        if ($d -eq [Math]::Floor($d)) {
+            return [double]$script:Rnd.Next(0, [int][Math]::Min([int]::MaxValue, ($mag*2)+10))
+        }
+        return [Math]::Round(($script:Rnd.NextDouble() * $mag * 2), 2)
+    }
+    # Fallback: als Text behandeln
+    return (Get-ObfuscatedString -OriginalValue ([string]$Value) -ColumnName $ColumnName -MaxLen 0)
+}
+
+# Liefert einen anonymisierten Wert passend zum Access-Feldtyp / Inhalt
 function Get-ObfuscatedValue {
     param(
         $OriginalValue,
@@ -122,19 +176,7 @@ function Get-ObfuscatedValue {
 
     # -------- Text ----------------------------------------------------
     if ($adText -contains $DataType) {
-        if (Test-LooksLikeEmail $strVal) { $e = New-FakeEmail; if ($MaxLen -gt 0 -and $e.Length -gt $MaxLen) { $e = $e.Substring(0,$MaxLen) }; return $e }
-        if (Test-LooksLikePhone $strVal) { $p = New-FakePhone; if ($MaxLen -gt 0 -and $p.Length -gt $MaxLen) { $p = $p.Substring(0,$MaxLen) }; return $p }
-
-        # Spaltenname als Hinweis nutzen
-        $lc = $ColumnName.ToLower()
-        switch -Regex ($lc) {
-            'vorname|firstname|first_name'          { $v = Get-RandomFrom $script:Vornamen;  if ($MaxLen -gt 0 -and $v.Length -gt $MaxLen) { $v=$v.Substring(0,$MaxLen) }; return $v }
-            'nachname|lastname|last_name|name'      { $v = Get-RandomFrom $script:Nachnamen; if ($MaxLen -gt 0 -and $v.Length -gt $MaxLen) { $v=$v.Substring(0,$MaxLen) }; return $v }
-            'strasse|street|adresse|address'        { $v = "{0} {1}" -f (Get-RandomFrom $script:Strassen), $script:Rnd.Next(1,199); if ($MaxLen -gt 0 -and $v.Length -gt $MaxLen) { $v=$v.Substring(0,$MaxLen) }; return $v }
-            'ort|stadt|city'                        { $v = Get-RandomFrom $script:Staedte;   if ($MaxLen -gt 0 -and $v.Length -gt $MaxLen) { $v=$v.Substring(0,$MaxLen) }; return $v }
-            'plz|zip|postal'                        { return ("{0:D5}" -f $script:Rnd.Next(1000,99999)) }
-            default                                 { return (New-FakeText -MaxLen $MaxLen) }
-        }
+        return (Get-ObfuscatedString -OriginalValue $strVal -ColumnName $ColumnName -MaxLen $MaxLen)
     }
 
     # -------- Ganzzahl ------------------------------------------------
@@ -340,17 +382,134 @@ function Invoke-Obfuscation {
 }
 
 # ========================================================================
+#  EXCEL-ENGINE (COM-Automation)  -  benoetigt installiertes Microsoft Excel
+# ========================================================================
+
+# Bestimmt anhand der Dateiendung den Typ: 'Access', 'Excel' oder 'Unknown'.
+function Get-FileKind {
+    param([string]$Path)
+    switch -Regex ([System.IO.Path]::GetExtension($Path).ToLower()) {
+        '\.(accdb|mdb)$'            { return 'Access' }
+        '\.(xlsx|xlsm|xlsb|xls)$'   { return 'Excel' }
+        default                     { return 'Unknown' }
+    }
+}
+
+# Startet eine unsichtbare Excel-Instanz.
+function New-ExcelApp {
+    $excel = New-Object -ComObject Excel.Application
+    $excel.Visible = $false
+    $excel.DisplayAlerts = $false
+    $excel
+}
+
+# Gibt COM-Objekte frei und beendet Excel sauber.
+function Close-ExcelApp {
+    param($Excel, $Workbook)
+    if ($Workbook) { try { $Workbook.Close($false) } catch {} }
+    if ($Excel)    { try { $Excel.Quit() } catch {} }
+    if ($Workbook) { try { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($Workbook) } catch {} }
+    if ($Excel)    { try { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($Excel) } catch {} }
+    [System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()
+}
+
+# Liefert die Namen aller Arbeitsblaetter einer Excel-Datei.
+function Get-ExcelSheets {
+    param([string]$Path)
+    $sheets = @()
+    $excel = New-ExcelApp; $wb = $null
+    try {
+        $wb = $excel.Workbooks.Open($Path, 0, $true)   # ReadOnly
+        foreach ($ws in $wb.Worksheets) { $sheets += [string]$ws.Name }
+    } finally { Close-ExcelApp -Excel $excel -Workbook $wb }
+    $sheets
+}
+
+# Liefert die Spalten (Kopfzeile = erste Zeile) eines Arbeitsblattes.
+# Rueckgabe: Liste von Objekten mit AbsoluteColumn (Spaltennummer) und Name.
+function Get-ExcelColumns {
+    param([string]$Path, [string]$Sheet)
+    $cols = @()
+    $excel = New-ExcelApp; $wb = $null
+    try {
+        $wb = $excel.Workbooks.Open($Path, 0, $true)   # ReadOnly
+        $ws = $wb.Worksheets.Item($Sheet)
+        $used = $ws.UsedRange
+        $firstRow = [int]$used.Row
+        $firstCol = [int]$used.Column
+        $nCols    = [int]$used.Columns.Count
+        for ($i = 0; $i -lt $nCols; $i++) {
+            $absCol = $firstCol + $i
+            $hdr = $ws.Cells.Item($firstRow, $absCol).Value2
+            $name = if ($null -eq $hdr -or ([string]$hdr).Trim().Length -eq 0) { "Spalte $absCol" } else { [string]$hdr }
+            $cols += [pscustomobject]@{ AbsoluteColumn = $absCol; Name = $name }
+        }
+    } finally { Close-ExcelApp -Excel $excel -Workbook $wb }
+    $cols
+}
+
+# Anonymisiert die angegebenen Spalten eines Arbeitsblattes und speichert.
+# $Columns = Liste von Objekten mit AbsoluteColumn und Name.
+function Invoke-ObfuscationExcel {
+    param([string]$Path, [string]$Sheet, $Columns, [scriptblock]$Log)
+
+    $excel = New-ExcelApp; $wb = $null
+    try {
+        $wb = $excel.Workbooks.Open($Path)
+        $ws = $wb.Worksheets.Item($Sheet)
+        $used = $ws.UsedRange
+        $firstRow  = [int]$used.Row
+        $nRows     = [int]$used.Rows.Count
+        $headerRow = $firstRow
+        $dataStart = $firstRow + 1
+        $lastRow   = $firstRow + $nRows - 1
+
+        if ($lastRow -lt $dataStart) { & $Log "Arbeitsblatt '$Sheet' hat keine Datenzeilen."; return 0 }
+
+        & $Log ("Anonymisiere Spalten: " + (($Columns | ForEach-Object { $_.Name }) -join ', '))
+
+        foreach ($col in $Columns) {
+            $absCol = [int]$col.AbsoluteColumn
+            $rng = $ws.Range($ws.Cells.Item($dataStart, $absCol), $ws.Cells.Item($lastRow, $absCol))
+            $vals = $rng.Value2
+
+            if ($vals -is [array]) {
+                # 2D-Array [1..n, 1..1]
+                for ($r = 1; $r -le $vals.GetLength(0); $r++) {
+                    $vals[$r,1] = Get-ObfuscatedValueGeneric -Value $vals[$r,1] -ColumnName $col.Name
+                }
+                $rng.Value2 = $vals
+            } else {
+                # Einzelne Datenzelle -> Skalar
+                $rng.Value2 = Get-ObfuscatedValueGeneric -Value $vals -ColumnName $col.Name
+            }
+            & $Log "  Spalte '$($col.Name)' anonymisiert."
+        }
+
+        $wb.Save()
+        $rows = $lastRow - $dataStart + 1
+        & $Log "$rows Datenzeile(n) verarbeitet."
+        return $rows
+    } finally {
+        Close-ExcelApp -Excel $excel -Workbook $wb
+    }
+}
+
+# ========================================================================
 #  GRAFISCHE OBERFLAECHE
 # ========================================================================
+# Zwischen Handlern geteilte Zuordnung Excel-Spalten (Position -> Spaltennr.)
+$script:ExcelCols = @()
+
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Access-Datenbank anonymisieren / verschleiern"
+$form.Text = "Access-/Excel-Daten anonymisieren / verschleiern"
 $form.Size = New-Object System.Drawing.Size(640, 620)
 $form.StartPosition = 'CenterScreen'
 $form.MinimumSize = New-Object System.Drawing.Size(560, 560)
 
 # --- Datei-Auswahl ---
 $lblFile = New-Object System.Windows.Forms.Label
-$lblFile.Text = "Access-Datenbank (.accdb / .mdb):"
+$lblFile.Text = "Access-Datenbank (.accdb / .mdb) oder Excel-Datei (.xlsx / .xls):"
 $lblFile.Location = '15,15'; $lblFile.AutoSize = $true
 $form.Controls.Add($lblFile)
 
@@ -364,9 +523,9 @@ $btnBrowse.Text = "Durchsuchen..."; $btnBrowse.Location = '505,37'; $btnBrowse.S
 $btnBrowse.Anchor = 'Top,Right'
 $form.Controls.Add($btnBrowse)
 
-# --- Tabellen-Auswahl ---
+# --- Tabellen-/Arbeitsblatt-Auswahl ---
 $lblTable = New-Object System.Windows.Forms.Label
-$lblTable.Text = "Tabelle:"; $lblTable.Location = '15,74'; $lblTable.AutoSize = $true
+$lblTable.Text = "Tabelle / Arbeitsblatt:"; $lblTable.Location = '15,74'; $lblTable.AutoSize = $true
 $form.Controls.Add($lblTable)
 
 $cmbTable = New-Object System.Windows.Forms.ComboBox
@@ -442,7 +601,10 @@ $Log = {
 # ------------------------------------------------------------------------
 $btnBrowse.Add_Click({
     $dlg = New-Object System.Windows.Forms.OpenFileDialog
-    $dlg.Filter = "Access-Datenbanken (*.accdb;*.mdb)|*.accdb;*.mdb|Alle Dateien (*.*)|*.*"
+    $dlg.Filter = "Access/Excel (*.accdb;*.mdb;*.xlsx;*.xlsm;*.xlsb;*.xls)|*.accdb;*.mdb;*.xlsx;*.xlsm;*.xlsb;*.xls|" +
+                  "Access-Datenbanken (*.accdb;*.mdb)|*.accdb;*.mdb|" +
+                  "Excel-Dateien (*.xlsx;*.xlsm;*.xlsb;*.xls)|*.xlsx;*.xlsm;*.xlsb;*.xls|" +
+                  "Alle Dateien (*.*)|*.*"
     if ($dlg.ShowDialog() -eq 'OK') {
         $txtFile.Text = $dlg.FileName
         $cmbTable.Items.Clear()
@@ -455,14 +617,24 @@ $btnLoad.Add_Click({
     if (-not (Test-Path -LiteralPath $path)) { & $Log "Datei nicht gefunden: $path"; return }
 
     $cmbTable.Items.Clear(); $clbColumns.Items.Clear()
+    $kind = Get-FileKind -Path $path
     try {
-        $conn = New-AccessConnection -Path $path
-        try {
-            $tables = Get-AccessTables -Conn $conn
-            foreach ($t in $tables) { [void]$cmbTable.Items.Add($t) }
-            & $Log "$($tables.Count) Tabelle(n) geladen."
+        if ($kind -eq 'Excel') {
+            $sheets = Get-ExcelSheets -Path $path
+            foreach ($s in $sheets) { [void]$cmbTable.Items.Add($s) }
+            & $Log "Excel-Datei: $($sheets.Count) Arbeitsblatt/-blaetter geladen."
             if ($cmbTable.Items.Count -gt 0) { $cmbTable.SelectedIndex = 0 }
-        } finally { $conn.Close(); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($conn) | Out-Null }
+        }
+        elseif ($kind -eq 'Access') {
+            $conn = New-AccessConnection -Path $path
+            try {
+                $tables = Get-AccessTables -Conn $conn
+                foreach ($t in $tables) { [void]$cmbTable.Items.Add($t) }
+                & $Log "Access-Datenbank: $($tables.Count) Tabelle(n) geladen."
+                if ($cmbTable.Items.Count -gt 0) { $cmbTable.SelectedIndex = 0 }
+            } finally { $conn.Close(); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($conn) | Out-Null }
+        }
+        else { & $Log "Unbekannter Dateityp. Bitte .accdb/.mdb oder .xlsx/.xls waehlen." }
     } catch { & $Log "Fehler: $($_.Exception.Message)" }
 })
 
@@ -472,21 +644,30 @@ $cmbTable.Add_SelectedIndexChanged({
     if (-not (Test-Path -LiteralPath $path) -or [string]::IsNullOrEmpty($table)) { return }
 
     $clbColumns.Items.Clear()
+    $script:ExcelCols = @()
+    $kind = Get-FileKind -Path $path
     try {
-        $conn = New-AccessConnection -Path $path
-        try {
-            $cols     = Get-AccessColumns -Conn $conn -Table $table
-            $readonly = Get-ReadOnlyColumns -Conn $conn -Table $table
-            $roCount  = 0
-            foreach ($c in $cols) {
-                # Schreibgeschuetzte Spalten (Autowert/berechnet) automatisch
-                # ankreuzen -> bleiben unveraendert; alle anderen offen lassen.
-                $isRo = $readonly.ContainsKey($c)
-                [void]$clbColumns.Items.Add($c, $isRo)
-                if ($isRo) { $roCount++ }
-            }
-            & $Log "Tabelle '$table': $($cols.Count) Spalte(n) geladen ($roCount schreibgeschuetzt, autom. angekreuzt)."
-        } finally { $conn.Close(); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($conn) | Out-Null }
+        if ($kind -eq 'Excel') {
+            $script:ExcelCols = @(Get-ExcelColumns -Path $path -Sheet $table)
+            foreach ($c in $script:ExcelCols) { [void]$clbColumns.Items.Add($c.Name, $false) }
+            & $Log "Arbeitsblatt '$table': $($script:ExcelCols.Count) Spalte(n) geladen."
+        }
+        elseif ($kind -eq 'Access') {
+            $conn = New-AccessConnection -Path $path
+            try {
+                $cols     = Get-AccessColumns -Conn $conn -Table $table
+                $readonly = Get-ReadOnlyColumns -Conn $conn -Table $table
+                $roCount  = 0
+                foreach ($c in $cols) {
+                    # Schreibgeschuetzte Spalten (Autowert/berechnet) automatisch
+                    # ankreuzen -> bleiben unveraendert; alle anderen offen lassen.
+                    $isRo = $readonly.ContainsKey($c)
+                    [void]$clbColumns.Items.Add($c, $isRo)
+                    if ($isRo) { $roCount++ }
+                }
+                & $Log "Tabelle '$table': $($cols.Count) Spalte(n) geladen ($roCount schreibgeschuetzt, autom. angekreuzt)."
+            } finally { $conn.Close(); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($conn) | Out-Null }
+        }
     } catch { & $Log "Fehler beim Laden der Spalten: $($_.Exception.Message)" }
 })
 
@@ -500,15 +681,18 @@ $btnRun.Add_Click({
     if ([string]::IsNullOrEmpty($table))     { & $Log "Bitte eine Tabelle waehlen."; return }
     if ($clbColumns.Items.Count -eq 0)       { & $Log "Keine Spalten geladen."; return }
 
-    # NICHT angekreuzte Spalten = zu anonymisieren
-    $toObf = @()
-    for ($i=0; $i -lt $clbColumns.Items.Count; $i++) {
-        if (-not $clbColumns.GetItemChecked($i)) { $toObf += [string]$clbColumns.Items[$i] }
-    }
-    if ($toObf.Count -eq 0) { & $Log "Alle Spalten sind angekreuzt - es wird nichts veraendert."; return }
+    $kind = Get-FileKind -Path $path
 
-    $msg = "Folgende Spalten werden UNWIDERRUFLICH anonymisiert:`n`n" + ($toObf -join ", ") +
-           "`n`nTabelle: $table`nFortfahren?"
+    # NICHT angekreuzte Eintraege = zu anonymisieren (Positionen merken)
+    $uncheckedPos = @()
+    for ($i=0; $i -lt $clbColumns.Items.Count; $i++) {
+        if (-not $clbColumns.GetItemChecked($i)) { $uncheckedPos += $i }
+    }
+    if ($uncheckedPos.Count -eq 0) { & $Log "Alle Spalten sind angekreuzt - es wird nichts veraendert."; return }
+
+    $namesToObf = $uncheckedPos | ForEach-Object { [string]$clbColumns.Items[$_] }
+    $msg = "Folgende Spalten werden UNWIDERRUFLICH anonymisiert:`n`n" + ($namesToObf -join ", ") +
+           "`n`nTabelle/Blatt: $table`nFortfahren?"
     if ([System.Windows.Forms.MessageBox]::Show($msg, "Bestaetigung", 'YesNo', 'Warning') -ne 'Yes') {
         & $Log "Abgebrochen."; return
     }
@@ -526,9 +710,19 @@ $btnRun.Add_Click({
 
         $form.Cursor = 'WaitCursor'; $btnRun.Enabled = $false
         & $Log "Starte Anonymisierung..."
-        $n = Invoke-Obfuscation -Path $path -Table $table -ColumnsToObfuscate $toObf -Log $Log
-        & $Log "Fertig. $n Datensatz/-saetze aktualisiert."
-        [System.Windows.Forms.MessageBox]::Show("Anonymisierung abgeschlossen.`n$n Datensaetze aktualisiert.", "Fertig", 'OK', 'Information') | Out-Null
+
+        if ($kind -eq 'Excel') {
+            # Positionen -> Excel-Spalten (Nummer + Name) ueber die gespeicherte Zuordnung
+            $cols = $uncheckedPos | ForEach-Object { $script:ExcelCols[$_] }
+            $n = Invoke-ObfuscationExcel -Path $path -Sheet $table -Columns $cols -Log $Log
+            & $Log "Fertig. $n Datenzeile(n) verarbeitet."
+            [System.Windows.Forms.MessageBox]::Show("Anonymisierung abgeschlossen.`n$n Datenzeilen verarbeitet.", "Fertig", 'OK', 'Information') | Out-Null
+        }
+        else {
+            $n = Invoke-Obfuscation -Path $path -Table $table -ColumnsToObfuscate $namesToObf -Log $Log
+            & $Log "Fertig. $n Datensatz/-saetze aktualisiert."
+            [System.Windows.Forms.MessageBox]::Show("Anonymisierung abgeschlossen.`n$n Datensaetze aktualisiert.", "Fertig", 'OK', 'Information') | Out-Null
+        }
     } catch {
         & $Log "FEHLER: $($_.Exception.Message)"
         [System.Windows.Forms.MessageBox]::Show("Fehler: $($_.Exception.Message)", "Fehler", 'OK', 'Error') | Out-Null
