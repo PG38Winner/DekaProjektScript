@@ -122,7 +122,7 @@ function Get-ObfuscatedValue {
 
     # -------- Text ----------------------------------------------------
     if ($adText -contains $DataType) {
-        if (Test-LooksLikeEmail $strVal) { return (New-FakeEmail) }
+        if (Test-LooksLikeEmail $strVal) { $e = New-FakeEmail; if ($MaxLen -gt 0 -and $e.Length -gt $MaxLen) { $e = $e.Substring(0,$MaxLen) }; return $e }
         if (Test-LooksLikePhone $strVal) { $p = New-FakePhone; if ($MaxLen -gt 0 -and $p.Length -gt $MaxLen) { $p = $p.Substring(0,$MaxLen) }; return $p }
 
         # Spaltenname als Hinweis nutzen
@@ -253,6 +253,127 @@ function Get-ReadOnlyColumns {
     $readonly
 }
 
+# Ermittelt die Primaerschluessel-Spalten einer Tabelle (falls vorhanden).
+function Get-PrimaryKeyColumns {
+    param($Conn, [string]$Table)
+    $pk = @()
+    $adSchemaPrimaryKeys = 28
+    try {
+        $rest = @($null, $null, $Table)
+        $rs = $Conn.OpenSchema($adSchemaPrimaryKeys, $rest)
+        while (-not $rs.EOF) {
+            $pk += [string]$rs.Fields.Item('COLUMN_NAME').Value
+            $rs.MoveNext()
+        }
+        $rs.Close()
+    } catch { }
+    $pk
+}
+
+# Groesse fuer einen SQL-Parameter (Textfelder brauchen eine positive Groesse).
+function Get-ParamSize {
+    param($M)
+    if ($script:adText -contains $M.Type) {
+        if ($M.MaxLen -gt 0 -and $M.MaxLen -le 65535) { return [int]$M.MaxLen }
+        return 65535
+    }
+    return 0
+}
+
+# Verfahren A: zuverlaessiges UPDATE ... SET ... WHERE <Primaerschluessel>.
+# Schreibt jede Aenderung direkt in die Datenbank (kein Cursor-Cache).
+function Invoke-ObfuscationByPk {
+    param($Conn, [string]$Table, [string[]]$Targets, [string[]]$Pk, $Meta, [scriptblock]$Log)
+
+    # Primaerschluessel-Spalten nicht anonymisieren (werden fuer WHERE gebraucht)
+    $realTargets = @()
+    foreach ($c in $Targets) {
+        if ($Pk -contains $c) { & $Log "  '$c' uebersprungen (Teil des Primaerschluessels)."; continue }
+        $realTargets += $c
+    }
+    if ($realTargets.Count -eq 0) { & $Log "Keine anonymisierbaren Spalten (nur Schluesselspalten)."; return 0 }
+
+    # Alle Zeilen (Schluessel + Zielspalten) in den Speicher lesen
+    $selCols = (@($Pk) + $realTargets | Select-Object -Unique | ForEach-Object { "[$_]" }) -join ", "
+    $rs = New-Object -ComObject ADODB.Recordset
+    $rs.Open("SELECT $selCols FROM [$Table]", $Conn, 0, 1)   # ForwardOnly / ReadOnly
+    $rows = @()
+    while (-not $rs.EOF) {
+        $keyVals = @{}; foreach ($k in $Pk)          { $keyVals[$k] = $rs.Fields.Item($k).Value }
+        $curVals = @{}; foreach ($c in $realTargets) { $curVals[$c] = $rs.Fields.Item($c).Value }
+        $rows += @{ Key = $keyVals; Cur = $curVals }
+        $rs.MoveNext()
+    }
+    $rs.Close()
+
+    # Vorbereitetes, parametrisiertes UPDATE
+    $adParamInput = 1
+    $setClause   = ($realTargets | ForEach-Object { "[$_]=?" }) -join ", "
+    $whereClause = ($Pk          | ForEach-Object { "[$_]=?" }) -join " AND "
+    $cmd = New-Object -ComObject ADODB.Command
+    $cmd.ActiveConnection = $Conn
+    $cmd.CommandText = "UPDATE [$Table] SET $setClause WHERE $whereClause"
+    foreach ($c in $realTargets) { [void]$cmd.Parameters.Append($cmd.CreateParameter($c, $Meta[$c].Type, $adParamInput, (Get-ParamSize $Meta[$c]), [System.DBNull]::Value)) }
+    foreach ($k in $Pk)          { [void]$cmd.Parameters.Append($cmd.CreateParameter($k, $Meta[$k].Type, $adParamInput, (Get-ParamSize $Meta[$k]), [System.DBNull]::Value)) }
+    try { $cmd.Prepared = $true } catch {}
+
+    $rowCount = 0
+    foreach ($row in $rows) {
+        $i = 0
+        foreach ($c in $realTargets) {
+            $new = Get-ObfuscatedValue -OriginalValue $row.Cur[$c] -DataType $Meta[$c].Type -MaxLen $Meta[$c].MaxLen -ColumnName $c
+            if ($new -is [string] -and $Meta[$c].MaxLen -gt 0 -and $new.Length -gt $Meta[$c].MaxLen) { $new = $new.Substring(0, $Meta[$c].MaxLen) }
+            $cmd.Parameters.Item($i).Value = $new
+            $i++
+        }
+        foreach ($k in $Pk) {
+            $kv = $row.Key[$k]
+            if ($null -eq $kv) { $kv = [System.DBNull]::Value }
+            $cmd.Parameters.Item($i).Value = $kv
+            $i++
+        }
+        try { $null = $cmd.Execute() ; $rowCount++ }
+        catch { & $Log "  Datensatz uebersprungen (Update-Fehler: $($_.Exception.Message))." }
+    }
+
+    & $Log "$rowCount Datensatz/-saetze aktualisiert."
+    return $rowCount
+}
+
+# Verfahren B (Fallback ohne Primaerschluessel): editierbarer Server-Cursor.
+function Invoke-ObfuscationByCursor {
+    param($Conn, [string]$Table, [string[]]$Targets, $Meta, [scriptblock]$Log)
+
+    $adOpenKeyset = 1; $adLockOptimistic = 3; $adUpdate = 0x01000000
+    $rs = New-Object -ComObject ADODB.Recordset
+    $rs.CursorLocation = 2   # adUseServer -> Update() schreibt sofort in die DB
+    $rs.Open("SELECT * FROM [$Table]", $Conn, $adOpenKeyset, $adLockOptimistic)
+
+    if (-not $rs.Supports($adUpdate)) {
+        $rs.Close()
+        & $Log "Tabelle ist nicht aktualisierbar (kein eindeutiger Index). Keine Aenderung moeglich."
+        return 0
+    }
+
+    $failed = @{}; $rowCount = 0
+    while (-not $rs.EOF) {
+        $changed = $false
+        foreach ($c in $Targets) {
+            if ($failed.ContainsKey($c)) { continue }
+            $field = $rs.Fields.Item($c)
+            $new = Get-ObfuscatedValue -OriginalValue $field.Value -DataType $Meta[$c].Type -MaxLen $Meta[$c].MaxLen -ColumnName $c
+            try { $field.Value = $new; $changed = $true }
+            catch { $failed[$c] = $true; & $Log "  '$c' uebersprungen (Feld nicht aktualisierbar)." }
+        }
+        if ($changed) { try { $rs.Update() } catch { try { $rs.CancelUpdate() } catch {}; & $Log "  Datensatz uebersprungen (Update-Fehler)." } }
+        $rowCount++
+        $rs.MoveNext()
+    }
+    $rs.Close()
+    & $Log "$rowCount Datensatz/-saetze verarbeitet."
+    return $rowCount
+}
+
 # ------------------------------------------------------------------------
 # Kernfunktion: ausgewaehlte (nicht angekreuzte) Spalten verschleiern
 # ------------------------------------------------------------------------
@@ -266,26 +387,21 @@ function Invoke-Obfuscation {
 
     $conn = New-AccessConnection -Path $Path
     try {
-        $adOpenKeyset    = 1
-        $adLockOptimistic = 3
-        $rs = New-Object -ComObject ADODB.Recordset
-        $rs.CursorLocation = 3   # adUseClient (stabileres Update)
-        $rs.Open("SELECT * FROM [$Table]", $conn, $adOpenKeyset, $adLockOptimistic)
-
-        # Feld-Metadaten cachen
+        # --- Feld-Metadaten ueber ein leeres Recordset ermitteln ---
+        $rsMeta = New-Object -ComObject ADODB.Recordset
+        $rsMeta.Open("SELECT * FROM [$Table] WHERE 1=0", $conn, 0, 1)
         $meta = @{}
-        foreach ($f in $rs.Fields) {
+        foreach ($f in $rsMeta.Fields) {
             $meta[$f.Name] = @{
                 Type       = [int]$f.Type
                 MaxLen     = [int]$f.DefinedSize
                 Attributes = [int]$f.Attributes
             }
         }
+        $rsMeta.Close()
 
-        # Schreibgeschuetzte Spalten (Autowert/berechnet) vorab per Schema
-        # ermitteln - diese kann Access grundsaetzlich nicht aktualisieren.
+        # --- Schreibgeschuetzte Spalten (Autowert/berechnet) ausschliessen ---
         $readonly = Get-ReadOnlyColumns -Conn $conn -Table $Table
-
         $targets = @()
         foreach ($c in $ColumnsToObfuscate) {
             if (-not $meta.ContainsKey($c)) { continue }
@@ -294,36 +410,23 @@ function Invoke-Obfuscation {
             if ($readonly.ContainsKey($c))       { & $Log "  '$c' uebersprungen (nicht aktualisierbar, z.B. Autowert/berechnet)."; continue }
             $targets += $c
         }
-
-        if ($targets.Count -eq 0) { & $Log "Keine beschreibbaren Spalten zum Anonymisieren."; $rs.Close(); return 0 }
+        if ($targets.Count -eq 0) { & $Log "Keine beschreibbaren Spalten zum Anonymisieren."; return 0 }
 
         & $Log ("Anonymisiere Spalten: " + ($targets -join ', '))
 
-        # Spalten, die zur Laufzeit doch nicht schreibbar sind, hier merken,
-        # damit die Meldung nur EINMAL erscheint (nicht pro Datensatz).
-        $failed = @{}
-        $rowCount = 0
-        while (-not $rs.EOF) {
-            $changed = $false
-            foreach ($c in $targets) {
-                if ($failed.ContainsKey($c)) { continue }
-                $field = $rs.Fields.Item($c)
-                $new = Get-ObfuscatedValue -OriginalValue $field.Value -DataType $meta[$c].Type -MaxLen $meta[$c].MaxLen -ColumnName $c
-                try { $field.Value = $new; $changed = $true }
-                catch {
-                    $failed[$c] = $true
-                    & $Log "  '$c' uebersprungen (Feld nicht aktualisierbar)."
-                }
-            }
-            if ($changed) {
-                try { $rs.Update() } catch { try { $rs.CancelUpdate() } catch {} }
-            }
-            $rowCount++
-            $rs.MoveNext()
+        # --- Primaerschluessel bestimmen -> zuverlaessiges UPDATE ... WHERE PK ---
+        $pk = @()
+        foreach ($k in (Get-PrimaryKeyColumns -Conn $conn -Table $Table)) {
+            if ($meta.ContainsKey($k)) { $pk += $k }
         }
-        $rs.Close()
-        & $Log "$rowCount Datensaetze verarbeitet."
-        return $rowCount
+
+        if ($pk.Count -gt 0) {
+            & $Log ("Primaerschluessel: " + ($pk -join ', ') + " -> Update per SQL.")
+            return (Invoke-ObfuscationByPk -Conn $conn -Table $Table -Targets $targets -Pk $pk -Meta $meta -Log $Log)
+        }
+
+        & $Log "Kein Primaerschluessel gefunden -> Fallback ueber editierbaren Cursor."
+        return (Invoke-ObfuscationByCursor -Conn $conn -Table $Table -Targets $targets -Meta $meta -Log $Log)
     }
     finally {
         try { $conn.Close() } catch {}
