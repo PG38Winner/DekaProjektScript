@@ -253,92 +253,8 @@ function Get-ReadOnlyColumns {
     $readonly
 }
 
-# Ermittelt die Primaerschluessel-Spalten einer Tabelle (falls vorhanden).
-function Get-PrimaryKeyColumns {
-    param($Conn, [string]$Table)
-    $pk = @()
-    $adSchemaPrimaryKeys = 28
-    try {
-        $rest = @($null, $null, $Table)
-        $rs = $Conn.OpenSchema($adSchemaPrimaryKeys, $rest)
-        while (-not $rs.EOF) {
-            $pk += [string]$rs.Fields.Item('COLUMN_NAME').Value
-            $rs.MoveNext()
-        }
-        $rs.Close()
-    } catch { }
-    $pk
-}
-
-# Groesse fuer einen SQL-Parameter (Textfelder brauchen eine positive Groesse).
-function Get-ParamSize {
-    param($M)
-    if ($script:adText -contains $M.Type) {
-        if ($M.MaxLen -gt 0 -and $M.MaxLen -le 65535) { return [int]$M.MaxLen }
-        return 65535
-    }
-    return 0
-}
-
-# Verfahren A: zuverlaessiges UPDATE ... SET ... WHERE <Primaerschluessel>.
-# Schreibt jede Aenderung direkt in die Datenbank (kein Cursor-Cache).
-function Invoke-ObfuscationByPk {
-    param($Conn, [string]$Table, [string[]]$Targets, [string[]]$Pk, $Meta, [scriptblock]$Log)
-
-    # Primaerschluessel-Spalten nicht anonymisieren (werden fuer WHERE gebraucht)
-    $realTargets = @()
-    foreach ($c in $Targets) {
-        if ($Pk -contains $c) { & $Log "  '$c' uebersprungen (Teil des Primaerschluessels)."; continue }
-        $realTargets += $c
-    }
-    if ($realTargets.Count -eq 0) { & $Log "Keine anonymisierbaren Spalten (nur Schluesselspalten)."; return 0 }
-
-    # Alle Zeilen (Schluessel + Zielspalten) in den Speicher lesen
-    $selCols = (@($Pk) + $realTargets | Select-Object -Unique | ForEach-Object { "[$_]" }) -join ", "
-    $rs = New-Object -ComObject ADODB.Recordset
-    $rs.Open("SELECT $selCols FROM [$Table]", $Conn, 0, 1)   # ForwardOnly / ReadOnly
-    $rows = @()
-    while (-not $rs.EOF) {
-        $keyVals = @{}; foreach ($k in $Pk)          { $keyVals[$k] = $rs.Fields.Item($k).Value }
-        $curVals = @{}; foreach ($c in $realTargets) { $curVals[$c] = $rs.Fields.Item($c).Value }
-        $rows += @{ Key = $keyVals; Cur = $curVals }
-        $rs.MoveNext()
-    }
-    $rs.Close()
-
-    # Vorbereitetes, parametrisiertes UPDATE
-    $adParamInput = 1
-    $setClause   = ($realTargets | ForEach-Object { "[$_]=?" }) -join ", "
-    $whereClause = ($Pk          | ForEach-Object { "[$_]=?" }) -join " AND "
-    $cmd = New-Object -ComObject ADODB.Command
-    $cmd.ActiveConnection = $Conn
-    $cmd.CommandText = "UPDATE [$Table] SET $setClause WHERE $whereClause"
-    foreach ($c in $realTargets) { [void]$cmd.Parameters.Append($cmd.CreateParameter("p_$c", $Meta[$c].Type, $adParamInput, (Get-ParamSize $Meta[$c]), [System.DBNull]::Value)) }
-    foreach ($k in $Pk)          { [void]$cmd.Parameters.Append($cmd.CreateParameter("k_$k", $Meta[$k].Type, $adParamInput, (Get-ParamSize $Meta[$k]), [System.DBNull]::Value)) }
-    try { $cmd.Prepared = $true } catch {}
-
-    $rowCount = 0
-    foreach ($row in $rows) {
-        # Parameter ueber ihren Namen (Spaltenname) ansprechen - kein Zahlen-Index
-        foreach ($c in $realTargets) {
-            $new = Get-ObfuscatedValue -OriginalValue $row.Cur[$c] -DataType $Meta[$c].Type -MaxLen $Meta[$c].MaxLen -ColumnName $c
-            if ($new -is [string] -and $Meta[$c].MaxLen -gt 0 -and $new.Length -gt $Meta[$c].MaxLen) { $new = $new.Substring(0, $Meta[$c].MaxLen) }
-            $cmd.Parameters.Item("p_$c").Value = $new
-        }
-        foreach ($k in $Pk) {
-            $kv = $row.Key[$k]
-            if ($null -eq $kv) { $kv = [System.DBNull]::Value }
-            $cmd.Parameters.Item("k_$k").Value = $kv
-        }
-        try { $null = $cmd.Execute() ; $rowCount++ }
-        catch { & $Log "  Datensatz uebersprungen (Update-Fehler: $($_.Exception.Message))." }
-    }
-
-    & $Log "$rowCount Datensatz/-saetze aktualisiert."
-    return $rowCount
-}
-
-# Verfahren B (Fallback ohne Primaerschluessel): editierbarer Server-Cursor.
+# Schreibt die anonymisierten Werte ueber einen editierbaren Server-Cursor.
+# adUseServer + Update() schreibt jede Zeile sofort in die .accdb/.mdb.
 function Invoke-ObfuscationByCursor {
     param($Conn, [string]$Table, [string[]]$Targets, $Meta, [scriptblock]$Log)
 
@@ -412,18 +328,9 @@ function Invoke-Obfuscation {
 
         & $Log ("Anonymisiere Spalten: " + ($targets -join ', '))
 
-        # --- Primaerschluessel bestimmen -> zuverlaessiges UPDATE ... WHERE PK ---
-        $pk = @()
-        foreach ($k in (Get-PrimaryKeyColumns -Conn $conn -Table $Table)) {
-            if ($meta.ContainsKey($k)) { $pk += $k }
-        }
-
-        if ($pk.Count -gt 0) {
-            & $Log ("Primaerschluessel: " + ($pk -join ', ') + " -> Update per SQL.")
-            return (Invoke-ObfuscationByPk -Conn $conn -Table $Table -Targets $targets -Pk $pk -Meta $meta -Log $Log)
-        }
-
-        & $Log "Kein Primaerschluessel gefunden -> Fallback ueber editierbaren Cursor."
+        # Schreiben ueber einen editierbaren Server-Cursor (schreibt sofort in
+        # die Datei). Bewusst OHNE ADODB.Command/Parameter, um COM-Typkonflikte
+        # zu vermeiden.
         return (Invoke-ObfuscationByCursor -Conn $conn -Table $Table -Targets $targets -Meta $meta -Log $Log)
     }
     finally {
