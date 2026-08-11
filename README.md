@@ -40,6 +40,11 @@ Die Ersetzung erfolgt typ- und inhaltsabhängig:
 `NULL`- und Leerwerte bleiben erhalten. Bei Access werden Autowert-/RowID-Spalten
 und nicht beschreibbare Felder automatisch übersprungen.
 
+**Konsistente Ersetzung:** Gleiche Originalwerte werden innerhalb einer Sitzung
+**immer gleich** ersetzt (z. B. „Max Müller" → immer derselbe Fake-Name, über
+Zeilen, Tabellen und Arbeitsblätter hinweg). So bleiben referentielle
+Zusammenhänge erhalten.
+
 ## Zwei Engines
 
 | Dateityp | Zugriff | Schreiben |
@@ -101,6 +106,12 @@ transparente Umgang damit:
 - Am besten **immer zuerst an einer Kopie** testen.
 - Die Datei darf während der Verarbeitung **nicht** in Access bzw. Excel
   geöffnet sein.
-- **Excel-Datumsfelder:** Werte werden über die schnelle `Value2`-Schnittstelle
-  gelesen; Datumszellen werden dabei wie Zahlen behandelt (der Wert wird
-  verschleiert, das Zellformat bleibt erhalten).
+- **Backup enthält Originaldaten:** Die automatische Sicherungskopie enthält
+  weiterhin die **echten personenbezogenen Daten**. Sie muss genauso geschützt
+  und nach Freigabe **gelöscht** werden. Wer keine Kopie mit Originaldaten will,
+  deaktiviert die Backup-Option.
+- **Excel-Datumsfelder:** Werte werden über `.Value` gelesen, sodass
+  Datumszellen als echtes Datum erkannt und (wie bei Access) um zufällige Tage
+  verschoben werden.
+- **Zufall:** Die Ersatzwerte werden mit `System.Random` erzeugt – geeignet für
+  Test-/Demodaten, **nicht** für kryptografisch starke Pseudonymisierung.

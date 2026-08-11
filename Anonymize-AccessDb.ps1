@@ -50,6 +50,10 @@ Add-Type -AssemblyName System.Drawing
 # Zufallsgenerator (einmalig)
 $script:Rnd = [System.Random]::new()
 
+# Konsistente Ersetzung: gleicher Originalwert -> gleicher Ersatzwert
+# (referentielle Zusammenhaenge bleiben erhalten). Gilt fuer Textwerte.
+$script:ObfMap = @{}
+
 # ------------------------------------------------------------------------
 # Daten-Pools fuer realistisch wirkende, aber erfundene Werte
 # ------------------------------------------------------------------------
@@ -69,7 +73,8 @@ $script:Woerter  = @('alpha','beta','gamma','delta','omega','sigma','lima','kilo
 # ------------------------------------------------------------------------
 # ADODB DataType / FieldAttribute Konstanten (Auszug)
 # ------------------------------------------------------------------------
-$adText     = @(200,201,202,203,129,130,131,141)   # varchar/char/wchar/longtext
+$adText     = @(200,201,202,203,129,130,141)       # varchar/char/wchar/longtext
+                                                   # (131 = adNumeric gehoert zu Decimal, NICHT hier)
 $adInteger  = @(2,3,16,17,18,19,20,21)             # (un)signed int/tinyint/bigint
 $adDecimal  = @(4,5,6,14,131)                        # single/double/currency/numeric
 $adDate     = @(7,133,134,135)                       # date/timestamp
@@ -115,23 +120,35 @@ function New-FakeText {
 # Kuerzt einen Text auf die (optionale) Maximallaenge.
 function Limit-Length { param([string]$Value,[int]$MaxLen) if ($MaxLen -gt 0 -and $Value.Length -gt $MaxLen) { return $Value.Substring(0,$MaxLen) }; $Value }
 
-# Anonymisiert einen Text-Wert (E-Mail / Telefon / Name / generisch).
-# Wird sowohl vom Access- als auch vom Excel-Pfad verwendet.
-function Get-ObfuscatedString {
-    param([string]$OriginalValue, [string]$ColumnName, [int]$MaxLen = 0)
+# Erzeugt einen (rohen) Ersatzwert fuer einen Text - ohne Laengenbegrenzung
+# und ohne Cache.
+function Get-FakeForString {
+    param([string]$OriginalValue, [string]$ColumnName)
 
-    if (Test-LooksLikeEmail $OriginalValue) { return (Limit-Length (New-FakeEmail) $MaxLen) }
-    if (Test-LooksLikePhone $OriginalValue) { return (Limit-Length (New-FakePhone) $MaxLen) }
+    if (Test-LooksLikeEmail $OriginalValue) { return (New-FakeEmail) }
+    if (Test-LooksLikePhone $OriginalValue) { return (New-FakePhone) }
 
     $lc = ([string]$ColumnName).ToLower()
     switch -Regex ($lc) {
-        'vorname|firstname|first_name'     { return (Limit-Length (Get-RandomFrom $script:Vornamen)  $MaxLen) }
-        'nachname|lastname|last_name|name' { return (Limit-Length (Get-RandomFrom $script:Nachnamen) $MaxLen) }
-        'strasse|street|adresse|address'   { return (Limit-Length ("{0} {1}" -f (Get-RandomFrom $script:Strassen), $script:Rnd.Next(1,199)) $MaxLen) }
-        'ort|stadt|city'                   { return (Limit-Length (Get-RandomFrom $script:Staedte)   $MaxLen) }
+        'vorname|firstname|first_name'     { return (Get-RandomFrom $script:Vornamen) }
+        'nachname|lastname|last_name|name' { return (Get-RandomFrom $script:Nachnamen) }
+        'strasse|street|adresse|address'   { return ("{0} {1}" -f (Get-RandomFrom $script:Strassen), $script:Rnd.Next(1,199)) }
+        'ort|stadt|city'                   { return (Get-RandomFrom $script:Staedte) }
         'plz|zip|postal'                   { return ("{0:D5}" -f $script:Rnd.Next(1000,99999)) }
-        default                            { return (New-FakeText -MaxLen $MaxLen) }
+        default                            { return (New-FakeText -MaxLen 0) }
     }
+}
+
+# Anonymisiert einen Text-Wert (E-Mail / Telefon / Name / generisch).
+# Wird sowohl vom Access- als auch vom Excel-Pfad verwendet.
+# Konsistent: gleicher Originalwert -> immer gleicher Ersatzwert (Cache).
+function Get-ObfuscatedString {
+    param([string]$OriginalValue, [string]$ColumnName, [int]$MaxLen = 0)
+
+    if (-not $script:ObfMap.ContainsKey($OriginalValue)) {
+        $script:ObfMap[$OriginalValue] = Get-FakeForString -OriginalValue $OriginalValue -ColumnName $ColumnName
+    }
+    return (Limit-Length $script:ObfMap[$OriginalValue] $MaxLen)
 }
 
 # Liefert einen anonymisierten Wert anhand des .NET-Typs (fuer Excel-Zellen,
@@ -471,17 +488,19 @@ function Invoke-ObfuscationExcel {
         foreach ($col in $Columns) {
             $absCol = [int]$col.AbsoluteColumn
             $rng = $ws.Range($ws.Cells.Item($dataStart, $absCol), $ws.Cells.Item($lastRow, $absCol))
-            $vals = $rng.Value2
+            # .Value (statt .Value2) liefert Datumszellen als [datetime] und nicht
+            # als serielle Zahl -> Datumsfelder werden korrekt als Datum behandelt.
+            $vals = $rng.Value
 
             if ($vals -is [array]) {
                 # 2D-Array [1..n, 1..1]
                 for ($r = 1; $r -le $vals.GetLength(0); $r++) {
                     $vals[$r,1] = Get-ObfuscatedValueGeneric -Value $vals[$r,1] -ColumnName $col.Name
                 }
-                $rng.Value2 = $vals
+                $rng.Value = $vals
             } else {
                 # Einzelne Datenzelle -> Skalar
-                $rng.Value2 = Get-ObfuscatedValueGeneric -Value $vals -ColumnName $col.Name
+                $rng.Value = Get-ObfuscatedValueGeneric -Value $vals -ColumnName $col.Name
             }
             & $Log "  Spalte '$($col.Name)' anonymisiert."
         }
@@ -706,6 +725,7 @@ $btnRun.Add_Click({
                         [System.IO.Path]::GetExtension($path))
             Copy-Item -LiteralPath $path -Destination $bak -Force
             & $Log "Backup erstellt: $bak"
+            & $Log "WARNUNG: Das Backup enthaelt weiterhin die ORIGINAL-Personendaten - bitte geschuetzt aufbewahren und nach Freigabe loeschen."
         }
 
         $form.Cursor = 'WaitCursor'; $btnRun.Enabled = $false
