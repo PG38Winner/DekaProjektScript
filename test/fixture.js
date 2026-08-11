@@ -39,10 +39,16 @@ export async function createFixture(file) {
     added.getCell(10).numFmt = '#,##0.00 "EUR"';
   });
 
+  // Zweites Blatt, ueber KundenID mit dem ersten verknuepft.
   const second = workbook.addWorksheet('Bestellungen');
   second.addRow(['BestellID', 'KundenID', 'Betrag']);
   second.addRow([1, 1001, 99.9]);
   second.addRow([2, 1002, 12.5]);
+  second.addRow([3, 1001, 44.0]);
+
+  // Drittes Blatt ohne Kopfzeile - muss uebersprungen werden, ohne den Lauf
+  // abzubrechen.
+  workbook.addWorksheet('Hinweise');
 
   await workbook.xlsx.writeFile(file);
   return file;

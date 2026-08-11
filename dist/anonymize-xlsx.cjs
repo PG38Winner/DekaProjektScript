@@ -66933,25 +66933,13 @@ async function anonymizeWorkbook({
   consistent = true
 }) {
   const workbook = await readWorkbook(file);
-  const sheet = selectSheet(workbook, sheetName);
-  const columns = readColumns(sheet);
-  if (!columns.length) {
-    throw new Error(`Arbeitsblatt "${sheet.name}" enthaelt keine Kopfzeile mit Spaltennamen.`);
-  }
+  const selected = selectSheets(workbook, sheetName);
+  const prepared = selected.map((sheet) => ({ sheet, columns: readColumns(sheet) }));
+  validateKeep(keep, prepared);
   const keepSet = new Set(keep.map(normalizeHeader));
-  const unknownKeep = keep.filter(
-    (name) => !columns.some((column) => normalizeHeader(column.header) === normalizeHeader(name))
-  );
-  if (unknownKeep.length) {
-    throw new Error(
-      `Unbekannte Spalte(n) in --keep: ${unknownKeep.join(", ")}
-Vorhanden: ${columns.map((c2) => c2.header).join(", ")}`
-    );
-  }
   const generate = createGenerator({ seed, consistent });
   const report = {
-    sheet: sheet.name,
-    columns: [],
+    sheets: [],
     rows: 0,
     changed: 0,
     output: null,
@@ -66959,23 +66947,39 @@ Vorhanden: ${columns.map((c2) => c2.header).join(", ")}`
     warnings: [],
     macrosPreserved: false
   };
-  for (const column of columns) {
-    const kept = keepSet.has(normalizeHeader(column.header));
+  for (const { sheet, columns } of prepared) {
     const entry = {
-      header: column.header,
-      kind: column.kind,
-      status: kept ? "unveraendert" : column.readOnly ? "uebersprungen (Formel)" : "anonymisiert",
-      changed: 0
+      name: sheet.name,
+      rows: Math.max(sheet.rowCount - 1, 0),
+      columns: [],
+      changed: 0,
+      skipped: null
     };
-    if (!kept && !column.readOnly && column.kind !== KINDS.EMPTY) {
-      entry.changed = anonymizeColumn(sheet, column, generate);
-      report.changed += entry.changed;
-    } else if (!kept && !column.readOnly && column.kind === KINDS.EMPTY) {
-      entry.status = "uebersprungen (leer)";
+    if (!columns.length) {
+      entry.skipped = "keine Kopfzeile mit Spaltennamen";
+      report.sheets.push(entry);
+      continue;
     }
-    report.columns.push(entry);
+    for (const column of columns) {
+      const kept = keepSet.has(normalizeHeader(column.header));
+      const columnEntry = {
+        header: column.header,
+        kind: column.kind,
+        status: kept ? "unveraendert" : column.readOnly ? "uebersprungen (Formel)" : "anonymisiert",
+        changed: 0
+      };
+      if (!kept && !column.readOnly && column.kind !== KINDS.EMPTY) {
+        columnEntry.changed = anonymizeColumn(sheet, column, generate);
+        entry.changed += columnEntry.changed;
+      } else if (!kept && !column.readOnly && column.kind === KINDS.EMPTY) {
+        columnEntry.status = "uebersprungen (leer)";
+      }
+      entry.columns.push(columnEntry);
+    }
+    report.changed += entry.changed;
+    report.rows += entry.rows;
+    report.sheets.push(entry);
   }
-  report.rows = Math.max(sheet.rowCount - 1, 0);
   if (dryRun) return report;
   const target = out ? import_node_path.default.resolve(out) : import_node_path.default.resolve(file);
   if (backup && target === import_node_path.default.resolve(file)) {
@@ -67003,7 +67007,7 @@ async function handleMacros(macro, target, report) {
   }
 }
 function anonymizeColumn(sheet, column, generate) {
-  const columnKey = `${sheet.name}!${column.index}`;
+  const columnKey = `${column.kind}:${normalizeHeader(column.header)}`;
   let changed = 0;
   sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
     if (rowNumber === 1) return;
@@ -67073,18 +67077,29 @@ function toPlainValue(raw) {
   if ("error" in raw) return null;
   return String(raw);
 }
-function selectSheet(workbook, sheetName) {
-  if (!sheetName) {
-    const first = workbook.worksheets[0];
-    if (!first) throw new Error("Die Datei enthaelt kein Arbeitsblatt.");
-    return first;
-  }
+function selectSheets(workbook, sheetName) {
+  if (!workbook.worksheets.length) throw new Error("Die Datei enthaelt kein Arbeitsblatt.");
+  if (!sheetName) return workbook.worksheets;
   const sheet = workbook.getWorksheet(sheetName);
   if (!sheet) {
     const available = workbook.worksheets.map((s2) => s2.name).join(", ");
     throw new Error(`Arbeitsblatt "${sheetName}" nicht gefunden. Vorhanden: ${available}`);
   }
-  return sheet;
+  return [sheet];
+}
+function validateKeep(keep, prepared) {
+  if (!keep.length) return;
+  const known = new Set(
+    prepared.flatMap(({ columns }) => columns.map((column) => normalizeHeader(column.header)))
+  );
+  const unknown = keep.filter((name) => !known.has(normalizeHeader(name)));
+  if (!unknown.length) return;
+  const available = prepared.filter(({ columns }) => columns.length).map(({ sheet, columns }) => `  ${sheet.name}: ${columns.map((c2) => c2.header).join(", ")}`).join("\n");
+  throw new Error(
+    `Unbekannte Spalte(n) in --keep: ${unknown.join(", ")}
+Vorhanden:
+${available}`
+  );
 }
 async function readWorkbook(file) {
   try {
@@ -67124,7 +67139,7 @@ Aufruf:
 
 Optionen:
   --list                Blaetter und Spalten anzeigen (nichts veraendern)
-  --sheet <name>        Arbeitsblatt; Standard: erstes Blatt
+  --sheet <name>        Nur dieses Arbeitsblatt; Standard: ALLE Blaetter
   --keep <a,b,c>        Spalten, die UNVERAENDERT bleiben (z. B. Schluessel, IDs)
   --out <datei>         Ergebnis in neue Datei schreiben statt zu ueberschreiben
   --no-backup           Keine Sicherungskopie anlegen
@@ -67200,14 +67215,20 @@ Arbeitsblatt: ${sheet.name}  (${sheet.rowCount} Datenzeilen)`);
   console.log("");
 }
 function printReport(report, dryRun) {
-  console.log(`
-Arbeitsblatt: ${report.sheet}  (${report.rows} Datenzeilen)
-`);
-  for (const column of report.columns) {
-    const count = column.changed ? `${column.changed} Zellen` : "";
-    console.log(
-      `  ${column.header.padEnd(28)} ${column.status.padEnd(22)} ${column.kind.padEnd(10)} ${count}`
-    );
+  for (const sheet of report.sheets) {
+    console.log(`
+Arbeitsblatt: ${sheet.name}  (${sheet.rows} Datenzeilen)`);
+    if (sheet.skipped) {
+      console.log(`  uebersprungen - ${sheet.skipped}`);
+      continue;
+    }
+    console.log("");
+    for (const column of sheet.columns) {
+      const count = column.changed ? `${column.changed} Zellen` : "";
+      console.log(
+        `  ${column.header.padEnd(28)} ${column.status.padEnd(22)} ${column.kind.padEnd(10)} ${count}`
+      );
+    }
   }
   console.log(`
   Geaenderte Zellen gesamt: ${report.changed}`);

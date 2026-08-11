@@ -80,7 +80,7 @@ node src/cli.js daten.xlsx --sheet Kunden --out anonym.xlsx --seed 42
 | Option | Wirkung |
 |--------|---------|
 | `--list` | Blätter, Spalten und erkannte Inhaltsart anzeigen |
-| `--sheet <name>` | Arbeitsblatt wählen (Standard: erstes Blatt) |
+| `--sheet <name>` | nur dieses Arbeitsblatt (Standard: **alle** Blätter) |
 | `--keep <a,b,c>` | Spalten, die **unverändert** bleiben |
 | `--out <datei>` | Ergebnis in neue Datei statt Überschreiben |
 | `--no-backup` | Keine Sicherungskopie anlegen |
@@ -96,6 +96,18 @@ Die erste Zeile eines Arbeitsblatts gilt als **Kopfzeile** mit den Spaltennamen.
 Spaltennamen in `--keep` werden ohne Rücksicht auf Groß-/Kleinschreibung
 verglichen; ein unbekannter Name bricht den Lauf ab, statt ihn stillschweigend
 zu ignorieren.
+
+### Mehrere Arbeitsblätter
+
+Ohne `--sheet` werden **alle** Arbeitsblätter der Datei verarbeitet – also
+genau die, die `--list` anzeigt. Mit `--sheet Kunden` bleibt es bei dem einen
+genannten Blatt.
+
+Blätter ohne Kopfzeile (Deckblatt, Notizen) werden übersprungen und im Bericht
+als solche ausgewiesen; der Lauf bricht deswegen nicht ab.
+
+Ein Name in `--keep` muss in mindestens **einem** Blatt vorkommen und wirkt
+überall dort, wo es ihn gibt.
 
 ## Art der Anonymisierung
 
@@ -125,10 +137,12 @@ Erhalten bleiben dabei:
 
 ### Konsistente Ersetzung
 
-Standardmäßig erhält derselbe Ausgangswert innerhalb einer Spalte **denselben**
-Ersatzwert. Taucht „Anna Müller" fünfmal auf, wird daraus fünfmal dieselbe
-erfundene Person. Dadurch bleiben Gruppierungen, Zählungen und Verknüpfungen
-über die Spalte hinweg auswertbar.
+Standardmäßig erhält derselbe Ausgangswert in Spalten gleichen Namens
+**denselben** Ersatzwert – auch **über Arbeitsblätter hinweg**. Taucht „Anna
+Müller" fünfmal auf, wird daraus fünfmal dieselbe erfundene Person; und steht
+`KundenID` sowohl im Blatt *Kunden* als auch im Blatt *Bestellungen*, zeigen
+die Bestellungen nach dem Lauf weiterhin auf denselben Kunden. Dadurch bleiben
+Gruppierungen, Zählungen und Verknüpfungen auswertbar.
 
 Mit `--no-consistent` erhält jede Zelle einen eigenen Zufallswert.
 
@@ -171,7 +185,7 @@ Makros verloren – auch darauf wird hingewiesen.
 npm test
 ```
 
-32 Tests zu Typerkennung, Werterhaltung, Dateibehandlung, Makro-Erhalt und
+36 Tests zu Typerkennung, Werterhaltung, Dateibehandlung, Makro-Erhalt und
 Gleichlauf von Bündel und Quellcode. Die Bündel-Tests werden übersprungen,
 solange `dist/` nicht gebaut ist.
 

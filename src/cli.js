@@ -18,7 +18,7 @@ Aufruf:
 
 Optionen:
   --list                Blaetter und Spalten anzeigen (nichts veraendern)
-  --sheet <name>        Arbeitsblatt; Standard: erstes Blatt
+  --sheet <name>        Nur dieses Arbeitsblatt; Standard: ALLE Blaetter
   --keep <a,b,c>        Spalten, die UNVERAENDERT bleiben (z. B. Schluessel, IDs)
   --out <datei>         Ergebnis in neue Datei schreiben statt zu ueberschreiben
   --no-backup           Keine Sicherungskopie anlegen
@@ -106,13 +106,21 @@ async function printStructure(file) {
 }
 
 function printReport(report, dryRun) {
-  console.log(`\nArbeitsblatt: ${report.sheet}  (${report.rows} Datenzeilen)\n`);
+  for (const sheet of report.sheets) {
+    console.log(`\nArbeitsblatt: ${sheet.name}  (${sheet.rows} Datenzeilen)`);
 
-  for (const column of report.columns) {
-    const count = column.changed ? `${column.changed} Zellen` : '';
-    console.log(
-      `  ${column.header.padEnd(28)} ${column.status.padEnd(22)} ${column.kind.padEnd(10)} ${count}`,
-    );
+    if (sheet.skipped) {
+      console.log(`  uebersprungen - ${sheet.skipped}`);
+      continue;
+    }
+
+    console.log('');
+    for (const column of sheet.columns) {
+      const count = column.changed ? `${column.changed} Zellen` : '';
+      console.log(
+        `  ${column.header.padEnd(28)} ${column.status.padEnd(22)} ${column.kind.padEnd(10)} ${count}`,
+      );
+    }
   }
 
   console.log(`\n  Geaenderte Zellen gesamt: ${report.changed}`);

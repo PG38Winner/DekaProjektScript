@@ -31,7 +31,7 @@ describe('inspectWorkbook', () => {
   test('erkennt Blaetter, Spalten und Inhaltsarten', async () => {
     const sheets = await inspectWorkbook(source);
 
-    assert.deepEqual(sheets.map((s) => s.name), ['Kunden', 'Bestellungen']);
+    assert.deepEqual(sheets.map((s) => s.name), ['Kunden', 'Bestellungen', 'Hinweise']);
 
     const kunden = sheets[0];
     assert.equal(kunden.rowCount, ROWS.length);
@@ -206,7 +206,7 @@ describe('anonymizeWorkbook', () => {
     assert.equal(rows[0].Vorname, ROWS[0][1]);
   });
 
-  test('verarbeitet das gewaehlte Arbeitsblatt', async () => {
+  test('--sheet beschraenkt auf das gewaehlte Arbeitsblatt', async () => {
     const file = await freshFile('blatt.xlsx');
     await anonymizeWorkbook({ file, sheet: 'Bestellungen', keep: ['BestellID'], backup: false, seed: 1 });
 
@@ -216,6 +216,65 @@ describe('anonymizeWorkbook', () => {
 
     const kunden = await readSheet(file, 'Kunden');
     assert.equal(kunden[0].Vorname, ROWS[0][1], 'anderes Blatt bleibt unberuehrt');
+  });
+
+  test('verarbeitet ohne --sheet ALLE Arbeitsblaetter', async () => {
+    const file = await freshFile('alle-blaetter.xlsx');
+    const report = await anonymizeWorkbook({ file, backup: false, seed: 4 });
+
+    assert.deepEqual(
+      report.sheets.map((s) => s.name),
+      ['Kunden', 'Bestellungen', 'Hinweise'],
+      'der Bericht muss alle Blaetter nennen',
+    );
+
+    const kunden = await readSheet(file, 'Kunden');
+    assert.notEqual(kunden[0].Nachname, ROWS[0][2], 'erstes Blatt anonymisiert');
+
+    const bestellungen = await readSheet(file, 'Bestellungen');
+    assert.notEqual(bestellungen[0].BestellID, 1, 'zweites Blatt ebenfalls anonymisiert');
+    assert.notEqual(bestellungen[0].Betrag, 99.9);
+  });
+
+  test('haelt Verknuepfungen zwischen Blaettern zusammen', async () => {
+    const file = await freshFile('verknuepfung.xlsx');
+    await anonymizeWorkbook({ file, backup: false, seed: 21 });
+
+    const kunden = await readSheet(file, 'Kunden');
+    const bestellungen = await readSheet(file, 'Bestellungen');
+
+    // KundenID 1001 steht in Zeile 1 der Kunden und in den Bestellungen 1 und 3.
+    assert.equal(
+      bestellungen[0].KundenID, kunden[0].KundenID,
+      'dieselbe KundenID muss blattuebergreifend denselben Ersatzwert erhalten',
+    );
+    assert.equal(bestellungen[2].KundenID, kunden[0].KundenID);
+
+    // KundenID 1002 steht in Zeile 2 der Kunden und in Bestellung 2.
+    assert.equal(bestellungen[1].KundenID, kunden[1].KundenID);
+    assert.notEqual(bestellungen[0].KundenID, bestellungen[1].KundenID,
+      'verschiedene IDs bleiben verschieden');
+  });
+
+  test('ueberspringt Blaetter ohne Kopfzeile, statt abzubrechen', async () => {
+    const file = await freshFile('ohne-kopfzeile.xlsx');
+    const report = await anonymizeWorkbook({ file, backup: false, seed: 5 });
+
+    const hinweise = report.sheets.find((s) => s.name === 'Hinweise');
+    assert.match(hinweise.skipped, /keine Kopfzeile/);
+    assert.equal(hinweise.changed, 0);
+    assert.ok(report.changed > 0, 'die uebrigen Blaetter werden trotzdem verarbeitet');
+  });
+
+  test('akzeptiert --keep fuer eine Spalte, die nur ein Blatt hat', async () => {
+    const file = await freshFile('keep-anderes-blatt.xlsx');
+    await anonymizeWorkbook({ file, keep: ['BestellID'], backup: false, seed: 6 });
+
+    const bestellungen = await readSheet(file, 'Bestellungen');
+    assert.equal(bestellungen[0].BestellID, 1, 'BestellID bleibt erhalten');
+
+    const kunden = await readSheet(file, 'Kunden');
+    assert.notEqual(kunden[0].Nachname, ROWS[0][2], 'Kunden werden weiterhin anonymisiert');
   });
 
   test('meldet unbekannte Spalten in --keep', async () => {

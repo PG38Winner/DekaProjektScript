@@ -40,11 +40,14 @@ export async function inspectWorkbook(file) {
 }
 
 /**
- * Anonymisiert ein Arbeitsblatt.
+ * Anonymisiert eine Arbeitsmappe.
+ *
+ * Ohne `sheet` werden **alle** Arbeitsblaetter verarbeitet - dasselbe, was
+ * `--list` anzeigt. Mit `sheet` bleibt es bei dem einen genannten Blatt.
  *
  * @param {object} options
  * @param {string} options.file             Eingabedatei.
- * @param {string} [options.sheet]          Blattname; Standard: erstes Blatt.
+ * @param {string} [options.sheet]          Blattname; Standard: alle Blaetter.
  * @param {string[]} [options.keep]         Spalten, die unveraendert bleiben.
  * @param {string} [options.out]            Zieldatei; Standard: Eingabedatei.
  * @param {boolean} [options.backup]        Sicherungskopie anlegen (Standard: true).
@@ -64,28 +67,17 @@ export async function anonymizeWorkbook({
   consistent = true,
 }) {
   const workbook = await readWorkbook(file);
-  const sheet = selectSheet(workbook, sheetName);
-  const columns = readColumns(sheet);
+  const selected = selectSheets(workbook, sheetName);
 
-  if (!columns.length) {
-    throw new Error(`Arbeitsblatt "${sheet.name}" enthaelt keine Kopfzeile mit Spaltennamen.`);
-  }
+  // Erst alle Blaetter einlesen, dann pruefen: --keep darf sich auf eine Spalte
+  // beziehen, die nur in einem der Blaetter vorkommt.
+  const prepared = selected.map((sheet) => ({ sheet, columns: readColumns(sheet) }));
+  validateKeep(keep, prepared);
 
   const keepSet = new Set(keep.map(normalizeHeader));
-  const unknownKeep = keep.filter(
-    (name) => !columns.some((column) => normalizeHeader(column.header) === normalizeHeader(name)),
-  );
-  if (unknownKeep.length) {
-    throw new Error(
-      `Unbekannte Spalte(n) in --keep: ${unknownKeep.join(', ')}\n` +
-      `Vorhanden: ${columns.map((c) => c.header).join(', ')}`,
-    );
-  }
-
   const generate = createGenerator({ seed, consistent });
   const report = {
-    sheet: sheet.name,
-    columns: [],
+    sheets: [],
     rows: 0,
     changed: 0,
     output: null,
@@ -94,26 +86,46 @@ export async function anonymizeWorkbook({
     macrosPreserved: false,
   };
 
-  for (const column of columns) {
-    const kept = keepSet.has(normalizeHeader(column.header));
+  for (const { sheet, columns } of prepared) {
     const entry = {
-      header: column.header,
-      kind: column.kind,
-      status: kept ? 'unveraendert' : column.readOnly ? 'uebersprungen (Formel)' : 'anonymisiert',
+      name: sheet.name,
+      rows: Math.max(sheet.rowCount - 1, 0),
+      columns: [],
       changed: 0,
+      skipped: null,
     };
 
-    if (!kept && !column.readOnly && column.kind !== KINDS.EMPTY) {
-      entry.changed = anonymizeColumn(sheet, column, generate);
-      report.changed += entry.changed;
-    } else if (!kept && !column.readOnly && column.kind === KINDS.EMPTY) {
-      entry.status = 'uebersprungen (leer)';
+    // Blaetter ohne Kopfzeile (Deckblatt, Notizen) werden uebergangen, statt
+    // den ganzen Lauf abzubrechen.
+    if (!columns.length) {
+      entry.skipped = 'keine Kopfzeile mit Spaltennamen';
+      report.sheets.push(entry);
+      continue;
     }
 
-    report.columns.push(entry);
-  }
+    for (const column of columns) {
+      const kept = keepSet.has(normalizeHeader(column.header));
+      const columnEntry = {
+        header: column.header,
+        kind: column.kind,
+        status: kept ? 'unveraendert' : column.readOnly ? 'uebersprungen (Formel)' : 'anonymisiert',
+        changed: 0,
+      };
 
-  report.rows = Math.max(sheet.rowCount - 1, 0);
+      if (!kept && !column.readOnly && column.kind !== KINDS.EMPTY) {
+        columnEntry.changed = anonymizeColumn(sheet, column, generate);
+        entry.changed += columnEntry.changed;
+      } else if (!kept && !column.readOnly && column.kind === KINDS.EMPTY) {
+        columnEntry.status = 'uebersprungen (leer)';
+      }
+
+      entry.columns.push(columnEntry);
+    }
+
+    report.changed += entry.changed;
+    report.rows += entry.rows;
+    report.sheets.push(entry);
+  }
 
   if (dryRun) return report;
 
@@ -162,7 +174,11 @@ async function handleMacros(macro, target, report) {
 
 /** Ersetzt die Werte einer Spalte; gibt die Anzahl geaenderter Zellen zurueck. */
 function anonymizeColumn(sheet, column, generate) {
-  const columnKey = `${sheet.name}!${column.index}`;
+  // Der Schluessel ist bewusst blattuebergreifend: eine Spalte gleichen Namens
+  // und gleicher Art verknuepft in der Regel zwei Blaetter (KundenID in
+  // "Kunden" und in "Bestellungen"). Nur mit gemeinsamem Schluessel bleibt die
+  // Verknuepfung nach der Anonymisierung bestehen.
+  const columnKey = `${column.kind}:${normalizeHeader(column.header)}`;
   let changed = 0;
 
   sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
@@ -273,19 +289,41 @@ function toPlainValue(raw) {
   return String(raw);
 }
 
-function selectSheet(workbook, sheetName) {
-  if (!sheetName) {
-    const first = workbook.worksheets[0];
-    if (!first) throw new Error('Die Datei enthaelt kein Arbeitsblatt.');
-    return first;
-  }
+/** Ohne Namen alle Arbeitsblaetter, sonst genau das genannte. */
+function selectSheets(workbook, sheetName) {
+  if (!workbook.worksheets.length) throw new Error('Die Datei enthaelt kein Arbeitsblatt.');
+
+  if (!sheetName) return workbook.worksheets;
 
   const sheet = workbook.getWorksheet(sheetName);
   if (!sheet) {
     const available = workbook.worksheets.map((s) => s.name).join(', ');
     throw new Error(`Arbeitsblatt "${sheetName}" nicht gefunden. Vorhanden: ${available}`);
   }
-  return sheet;
+  return [sheet];
+}
+
+/**
+ * Prueft die --keep-Namen gegen alle zu verarbeitenden Blaetter. Ein Name muss
+ * in mindestens einem Blatt vorkommen; wo er vorkommt, wirkt er.
+ */
+function validateKeep(keep, prepared) {
+  if (!keep.length) return;
+
+  const known = new Set(
+    prepared.flatMap(({ columns }) => columns.map((column) => normalizeHeader(column.header))),
+  );
+  const unknown = keep.filter((name) => !known.has(normalizeHeader(name)));
+  if (!unknown.length) return;
+
+  const available = prepared
+    .filter(({ columns }) => columns.length)
+    .map(({ sheet, columns }) => `  ${sheet.name}: ${columns.map((c) => c.header).join(', ')}`)
+    .join('\n');
+
+  throw new Error(
+    `Unbekannte Spalte(n) in --keep: ${unknown.join(', ')}\nVorhanden:\n${available}`,
+  );
 }
 
 async function readWorkbook(file) {
