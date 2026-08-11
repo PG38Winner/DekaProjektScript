@@ -117,7 +117,13 @@ function printReport(report, dryRun) {
 
   console.log(`\n  Geaenderte Zellen gesamt: ${report.changed}`);
   if (report.backup) console.log(`  Sicherungskopie:          ${report.backup}`);
+  if (report.macrosPreserved) console.log('  Makros:                   uebernommen');
   if (report.output) console.log(`  Geschrieben:              ${report.output}`);
+
+  for (const warning of report.warnings ?? []) {
+    console.warn(`\n  WARNUNG: ${warning}`);
+  }
+
   if (dryRun) console.log('\n  --dry-run: Es wurde nichts geschrieben.');
   console.log('');
 }

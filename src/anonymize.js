@@ -10,6 +10,7 @@ import ExcelJS from 'exceljs';
 
 import { classifyColumn, KINDS } from './classify.js';
 import { createGenerator } from './generators.js';
+import { readMacroParts, restoreMacroParts } from './macros.js';
 
 /** Wie viele Werte pro Spalte fuer die Typerkennung herangezogen werden. */
 const SAMPLE_SIZE = 200;
@@ -82,7 +83,16 @@ export async function anonymizeWorkbook({
   }
 
   const generate = createGenerator({ seed, consistent });
-  const report = { sheet: sheet.name, columns: [], rows: 0, changed: 0, output: null, backup: null };
+  const report = {
+    sheet: sheet.name,
+    columns: [],
+    rows: 0,
+    changed: 0,
+    output: null,
+    backup: null,
+    warnings: [],
+    macrosPreserved: false,
+  };
 
   for (const column of columns) {
     const kept = keepSet.has(normalizeHeader(column.header));
@@ -115,9 +125,39 @@ export async function anonymizeWorkbook({
     report.backup = await createBackup(file);
   }
 
+  // Makros vor dem Schreiben sichern - exceljs verwirft sie beim Erzeugen der
+  // neuen Datei und sie muessen anschliessend wieder eingefuegt werden.
+  const macro = await readMacroParts(file);
+
   await workbook.xlsx.writeFile(target);
   report.output = target;
+
+  if (macro) await handleMacros(macro, target, report);
+
   return report;
+}
+
+/**
+ * Fuegt ein gesichertes VBA-Projekt wieder ein und meldet, was dabei trotzdem
+ * auf der Strecke bleibt.
+ */
+async function handleMacros(macro, target, report) {
+  if (path.extname(target).toLowerCase() !== '.xlsm') {
+    report.warnings.push(
+      `Die Quelldatei enthaelt Makros, die Zieldatei "${path.basename(target)}" ist aber keine ` +
+      '.xlsm-Datei. Makros koennen nur in .xlsm gespeichert werden und gehen hier verloren.',
+    );
+    return;
+  }
+
+  const lost = await restoreMacroParts(target, macro);
+  report.macrosPreserved = true;
+
+  if (lost.length) {
+    report.warnings.push(
+      `Diese Bestandteile der Originaldatei konnten nicht uebernommen werden: ${lost.join(', ')}`,
+    );
+  }
 }
 
 /** Ersetzt die Werte einer Spalte; gibt die Anzahl geaenderter Zellen zurueck. */
