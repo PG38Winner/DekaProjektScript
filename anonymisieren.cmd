@@ -2,9 +2,10 @@
 rem ---------------------------------------------------------------------------
 rem  Excel-Anonymisierer - Start ohne Installation.
 rem
-rem  Sucht eine Node.js-Laufzeit in dieser Reihenfolge:
-rem    1. bereits entpackte Laufzeit im Projektordner
-rem    2. entpackt die mitgelieferte ZIP-Datei, falls noetig
+rem  Die Node.js-Laufzeit liegt entpackt im Projektordner - es ist nichts
+rem  einzurichten. Gesucht wird in dieser Reihenfolge:
+rem    1. die mitgelieferte Laufzeit in node-v24.19.0-win-x64\
+rem    2. die mitgelieferte ZIP-Datei, falls der Ordner fehlt
 rem    3. ein installiertes Node.js aus dem Suchpfad
 rem
 rem  Aufruf:  anonymisieren.cmd "C:\Daten\kunden.xlsx" --list

@@ -18,29 +18,37 @@ und in CI-Pipelines.
 
 ### Ohne Internetzugang (für den Zielrechner)
 
-**Es ist nichts zu installieren.** Das Repository enthält alles Nötige:
-
-- `dist/anonymize-xlsx.cjs` – das komplette Werkzeug samt aller
-  Abhängigkeiten in einer Datei (~2,7 MB)
-- `node-v24.19.0-win-x64.zip` – die Node.js-Laufzeit für Windows
-
-Repository (oder dessen ZIP-Download) auf den Rechner kopieren und starten:
+**Es ist nichts zu installieren und nichts zu entpacken.** Repository
+herunterladen (grüner Knopf *Code → Download ZIP*), entpacken, Eingabe­auf­for­de­rung
+im entpackten Ordner öffnen – fertig:
 
 ```
 anonymisieren.cmd "C:\Daten\kunden.xlsx" --list
 ```
 
-Das Startskript entpackt die mitgelieferte Laufzeit beim ersten Aufruf selbst
-und verwendet sie. Ist bereits ein Node.js ab Version 20 installiert, nimmt es
-stattdessen dieses. Unter Linux/macOS leistet `./anonymisieren.sh` dasselbe,
-setzt dort aber ein installiertes Node.js voraus – die mitgelieferte Laufzeit
-ist eine Windows-Version.
+Alles Nötige liegt gebrauchsfertig im Repository:
 
-Ohne Startskript geht es genauso direkt:
+| Bestandteil | Zweck |
+|-------------|-------|
+| `node-v24.19.0-win-x64\` | entpackte Node.js-Laufzeit für Windows (`node.exe`, `npm.cmd`) |
+| `dist\anonymize-xlsx.cjs` | das Werkzeug samt aller Abhängigkeiten in einer Datei |
+| `anonymisieren.cmd` | Startskript – findet die Laufzeit selbst |
+
+Ist auf dem Rechner bereits Node.js ab Version 20 installiert, verwendet das
+Startskript dieses. Fehlt der entpackte Laufzeit-Ordner, greift es auf die
+ebenfalls mitgelieferte ZIP-Datei zurück und entpackt sie selbst.
+
+**Befehle direkt eintippen:** `node-umgebung.cmd` öffnet eine
+Eingabeaufforderung, in der die mitgelieferte Laufzeit im Suchpfad liegt.
+Darin funktionieren `node` und `npm` ohne Installation:
 
 ```
 node dist\anonymize-xlsx.cjs "C:\Daten\kunden.xlsx" --list
 ```
+
+Unter Linux/macOS leistet `./anonymisieren.sh` dasselbe, setzt dort aber ein
+installiertes Node.js voraus – die mitgelieferte Laufzeit ist eine
+Windows-Version.
 
 ### Mit Internetzugang (für die Weiterentwicklung)
 
@@ -197,8 +205,10 @@ solange `dist/` nicht gebaut ist.
 
 | Datei | Inhalt |
 |-------|--------|
-| `anonymisieren.cmd` | Start unter Windows, entpackt die Laufzeit bei Bedarf |
+| `anonymisieren.cmd` | Start unter Windows |
+| `node-umgebung.cmd` | Eingabeaufforderung mit `node`/`npm` im Suchpfad |
 | `anonymisieren.sh` | Start unter Linux/macOS |
+| `node-v24.19.0-win-x64/` | entpackte Node.js-Laufzeit für Windows |
 | `dist/anonymize-xlsx.cjs` | Eigenständiges Bündel, erzeugt mit `npm run build` |
 | `src/cli.js` | Kommandozeile, Ausgabe der Berichte |
 | `src/anonymize.js` | Arbeitsmappe lesen, ersetzen, schreiben |
@@ -209,18 +219,27 @@ solange `dist/` nicht gebaut ist.
 
 ## Mitgelieferte Node.js-Laufzeit
 
-Im Repository liegt die offizielle, portable Node.js-Laufzeit für Windows:
+Im Repository liegt die offizielle, portable Node.js-Laufzeit für Windows –
+**bereits entpackt** im Ordner `node-v24.19.0-win-x64\`, mit `node.exe` und
+`npm.cmd` direkt darin. Sie läuft ohne Installation und ohne Administrator­rechte.
 
-- Datei: `node-v24.19.0-win-x64.zip` (ca. 36 MB)
 - Version: **v24.19.0** (LTS „Krypton")
 - Quelle: <https://nodejs.org/dist/v24.19.0/node-v24.19.0-win-x64.zip>
-- SHA-256: `57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73`
+- SHA-256 des Archivs:
+  `57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73`
   (geprüft gegen die offizielle `SHASUMS256.txt`)
 
-`anonymisieren.cmd` entpackt das Archiv beim ersten Aufruf selbst. Von Hand
-geht es genauso: entpacken – `node.exe` und `npm.cmd` liegen darin direkt im
-Ordner `node-v24.19.0-win-x64\` und laufen ohne Installation.
+Das Archiv `node-v24.19.0-win-x64.zip` liegt zusätzlich bei und dient dem
+Startskript als Rückfall, falls der entpackte Ordner fehlt.
 
-> `anonymisieren.cmd` ist unter Windows **nicht** erprobt – diese Umgebung ist
-> Linux. Der Linux-Start (`anonymisieren.sh`), das Bündel und die Anonymisierung
-> selbst sind getestet. Bitte den ersten Windows-Aufruf einmal beobachten.
+### Größe des Repositorys
+
+Die entpackte Laufzeit macht das Repository groß: **rund 145 MB**, davon
+allein 89 MB `node.exe`. Der Download dauert entsprechend – dafür ist auf dem
+Zielrechner kein einziger Installationsschritt nötig.
+
+> Die Windows-Startskripte (`anonymisieren.cmd`, `node-umgebung.cmd`) sind unter
+> Windows **nicht** erprobt – diese Entwicklungsumgebung ist Linux. Getestet
+> sind der Linux-Start (`anonymisieren.sh`), das Bündel, die Anonymisierung und
+> die Unversehrtheit der eingecheckten `node.exe`. Bitte den ersten
+> Windows-Aufruf einmal beobachten.
