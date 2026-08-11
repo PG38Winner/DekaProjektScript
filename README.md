@@ -35,8 +35,7 @@ Alles Nötige liegt gebrauchsfertig im Repository:
 | `anonymisieren.cmd` | Startskript – findet die Laufzeit selbst |
 
 Ist auf dem Rechner bereits Node.js ab Version 20 installiert, verwendet das
-Startskript dieses. Fehlt der entpackte Laufzeit-Ordner, greift es auf die
-ebenfalls mitgelieferte ZIP-Datei zurück und entpackt sie selbst.
+Startskript dieses.
 
 **Befehle direkt eintippen:** `node-umgebung.cmd` öffnet eine
 Eingabeaufforderung, in der die mitgelieferte Laufzeit im Suchpfad liegt.
@@ -225,18 +224,41 @@ Im Repository liegt die offizielle, portable Node.js-Laufzeit für Windows –
 
 - Version: **v24.19.0** (LTS „Krypton")
 - Quelle: <https://nodejs.org/dist/v24.19.0/node-v24.19.0-win-x64.zip>
-- SHA-256 des Archivs:
-  `57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73`
-  (geprüft gegen die offizielle `SHASUMS256.txt`)
 
-Das Archiv `node-v24.19.0-win-x64.zip` liegt zusätzlich bei und dient dem
-Startskript als Rückfall, falls der entpackte Ordner fehlt.
+### Herkunft nachprüfen
+
+Das Archiv wurde beim Herunterladen gegen die offizielle `SHASUMS256.txt`
+geprüft und anschließend entpackt; das Archiv selbst liegt nicht mehr bei.
+Die Prüfsummen der Kette:
+
+| Gegenstand | SHA-256 |
+|------------|---------|
+| Archiv von nodejs.org | `57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73` |
+| daraus entpackte `node.exe` | `3602f2bb1a10f2cbab4c36886218a33c1ab3db87290e73b033c46c77147d0237` |
+
+Die zweite Zeile lässt sich jederzeit gegen die eingecheckte Datei prüfen:
+
+```powershell
+Get-FileHash node-v24.19.0-win-x64\node.exe -Algorithm SHA256
+```
+
+Wer der Kette nicht traut, lädt das Archiv selbst von nodejs.org, prüft es
+gegen `SHASUMS256.txt` und vergleicht die entpackte `node.exe`.
 
 ### Größe des Repositorys
 
-Die entpackte Laufzeit macht das Repository groß: **rund 145 MB**, davon
-allein 89 MB `node.exe`. Der Download dauert entsprechend – dafür ist auf dem
+Die entpackte Laufzeit macht das Repository groß: **rund 111 MB**, davon
+108 MB die Laufzeit und darin allein 89 MB `node.exe`. Der Download dauert entsprechend – dafür ist auf dem
 Zielrechner kein einziger Installationsschritt nötig.
+
+Das ZIP-Archiv war zwischenzeitlich ebenfalls eingecheckt und wurde entfernt,
+da es neben dem entpackten Ordner keinen Zweck mehr erfüllte. Es steckt
+weiterhin in der Git-Historie – ein `git clone` überträgt es also mit. Wer nur
+den aktuellen Stand braucht, spart das mit einem flachen Klon:
+
+```bash
+git clone --depth 1 https://github.com/PG38Winner/DekaProjektScript.git
+```
 
 > Die Windows-Startskripte (`anonymisieren.cmd`, `node-umgebung.cmd`) sind unter
 > Windows **nicht** erprobt – diese Entwicklungsumgebung ist Linux. Getestet
