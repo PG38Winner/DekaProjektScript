@@ -14,16 +14,50 @@ und in CI-Pipelines.
 > ACE-OLEDB-Provider nötig. Über `git show 84e2f66^:Anonymize-AccessDb.ps1`
 > lässt sich die alte Fassung bei Bedarf wieder herausholen.
 
-## Installation
+## Einrichten
 
-```bash
-npm install
+### Ohne Internetzugang (für den Zielrechner)
+
+**Es ist nichts zu installieren.** Das Repository enthält alles Nötige:
+
+- `dist/anonymize-xlsx.cjs` – das komplette Werkzeug samt aller
+  Abhängigkeiten in einer Datei (~2,7 MB)
+- `node-v24.19.0-win-x64.zip` – die Node.js-Laufzeit für Windows
+
+Repository (oder dessen ZIP-Download) auf den Rechner kopieren und starten:
+
+```
+anonymisieren.cmd "C:\Daten\kunden.xlsx" --list
 ```
 
-Erfordert Node.js ab Version 20. Eine portable Windows-Laufzeit liegt im
-Repository, siehe [Mitgelieferte Node.js-Laufzeit](#mitgelieferte-nodejs-laufzeit).
+Das Startskript entpackt die mitgelieferte Laufzeit beim ersten Aufruf selbst
+und verwendet sie. Ist bereits ein Node.js ab Version 20 installiert, nimmt es
+stattdessen dieses. Unter Linux/macOS leistet `./anonymisieren.sh` dasselbe,
+setzt dort aber ein installiertes Node.js voraus – die mitgelieferte Laufzeit
+ist eine Windows-Version.
+
+Ohne Startskript geht es genauso direkt:
+
+```
+node dist\anonymize-xlsx.cjs "C:\Daten\kunden.xlsx" --list
+```
+
+### Mit Internetzugang (für die Weiterentwicklung)
+
+```bash
+npm install          # Abhängigkeiten
+npm test             # Tests
+npm run build        # dist/anonymize-xlsx.cjs neu erzeugen
+```
+
+`npm run build` ist nach jeder Änderung an `src/` nötig, damit das Bündel den
+Quellcode wieder abbildet. Ein Test wacht darüber: er vergleicht die Ausgabe
+von Bündel und Quellcode bei gleichem Startwert.
 
 ## Verwenden
+
+Die Beispiele verwenden `node src/cli.js`; mit dem Bündel entsprechend
+`node dist/anonymize-xlsx.cjs` oder `anonymisieren.cmd`.
 
 ```bash
 # Blätter und erkannte Spaltentypen anzeigen (verändert nichts)
@@ -130,7 +164,9 @@ Makros verloren – auch darauf wird hingewiesen.
 npm test
 ```
 
-28 Tests zu Typerkennung, Werterhaltung, Dateibehandlung und Makro-Erhalt.
+32 Tests zu Typerkennung, Werterhaltung, Dateibehandlung, Makro-Erhalt und
+Gleichlauf von Bündel und Quellcode. Die Bündel-Tests werden übersprungen,
+solange `dist/` nicht gebaut ist.
 
 ## Grenzen
 
@@ -161,6 +197,9 @@ npm test
 
 | Datei | Inhalt |
 |-------|--------|
+| `anonymisieren.cmd` | Start unter Windows, entpackt die Laufzeit bei Bedarf |
+| `anonymisieren.sh` | Start unter Linux/macOS |
+| `dist/anonymize-xlsx.cjs` | Eigenständiges Bündel, erzeugt mit `npm run build` |
 | `src/cli.js` | Kommandozeile, Ausgabe der Berichte |
 | `src/anonymize.js` | Arbeitsmappe lesen, ersetzen, schreiben |
 | `src/classify.js` | Erkennung der Inhaltsart je Spalte |
@@ -178,5 +217,10 @@ Im Repository liegt die offizielle, portable Node.js-Laufzeit für Windows:
 - SHA-256: `57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73`
   (geprüft gegen die offizielle `SHASUMS256.txt`)
 
-Zum Verwenden das ZIP entpacken – `node.exe` und `npm.cmd` liegen darin
-direkt im Ordner `node-v24.19.0-win-x64\` und laufen ohne Installation.
+`anonymisieren.cmd` entpackt das Archiv beim ersten Aufruf selbst. Von Hand
+geht es genauso: entpacken – `node.exe` und `npm.cmd` liegen darin direkt im
+Ordner `node-v24.19.0-win-x64\` und laufen ohne Installation.
+
+> `anonymisieren.cmd` ist unter Windows **nicht** erprobt – diese Umgebung ist
+> Linux. Der Linux-Start (`anonymisieren.sh`), das Bündel und die Anonymisierung
+> selbst sind getestet. Bitte den ersten Windows-Aufruf einmal beobachten.

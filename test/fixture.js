@@ -1,6 +1,6 @@
 /** Erzeugt eine Beispiel-Arbeitsmappe fuer die Tests. */
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, rm } from 'node:fs/promises';
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
 
@@ -98,6 +98,7 @@ export async function createMacroFixture(file) {
   ));
 
   await writeFile(file, await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
+  await rm(temporary, { force: true });
   return file;
 }
 
