@@ -60,10 +60,39 @@ und nicht beschreibbare Felder automatisch übersprungen.
 
 ## Ausführen
 
+Empfohlen (signiertes Skript, keine gelockerte Richtlinie nötig):
+
 ```powershell
-# ggf. Ausführungsrichtlinie für die aktuelle Sitzung lockern
-powershell -ExecutionPolicy Bypass -File .\Anonymize-AccessDb.ps1
+powershell -File .\Anonymize-AccessDb.ps1
 ```
+
+Falls die Ausführungsrichtlinie unsignierte lokale Skripte blockiert, den
+sauberen Weg wählen — **nicht** `Bypass`, sondern für den aktuellen Benutzer:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+```
+
+Am besten das Skript **digital signieren** (Authenticode) und in der
+Sicherheitssoftware freigeben lassen – siehe Abschnitt „Fehlalarm der
+Sicherheitssoftware".
+
+## Fehlalarm der Sicherheitssoftware
+
+Das Skript enthält **keinen Schadcode**. Weil es jedoch viele Datensätze
+massenhaft überschreibt (das ähnelt für Verhaltensheuristiken Ransomware) und
+PowerShell + COM verwendet, kann es einen **Fehlalarm** auslösen. Der saubere,
+transparente Umgang damit:
+
+1. **Skript digital signieren** (Authenticode-Code-Signing-Zertifikat):
+   ```powershell
+   Set-AuthenticodeSignature -FilePath .\Anonymize-AccessDb.ps1 `
+       -Certificate $cert -TimeStampServer "http://timestamp.digicert.com"
+   ```
+2. **In der Sicherheitssoftware freigeben** (Allow-List / Ausschluss anhand
+   des Datei-Hashes oder Zertifikats) – über die zuständige IT/den Admin.
+3. **Fehlalarm an den Hersteller melden** (z. B. Microsoft Defender:
+   „Submit a file for analysis"), damit die Erkennung generell korrigiert wird.
 
 ## Hinweise
 
