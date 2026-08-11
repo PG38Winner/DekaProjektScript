@@ -94,6 +94,79 @@ transparente Umgang damit:
 3. **Fehlalarm an den Hersteller melden** (z. B. Microsoft Defender:
    „Submit a file for analysis"), damit die Erkennung generell korrigiert wird.
 
+## Node.js-Variante: Excel-Anonymisierer (CLI)
+
+Neben dem PowerShell-Skript liegt eine Node.js-Umsetzung für **Excel-Dateien**
+im Ordner `src/`. Sie arbeitet direkt auf der Datei – **ein installiertes
+Microsoft Excel wird nicht benötigt**, und sie läuft dadurch auch auf Servern,
+in CI-Pipelines und unter Linux/macOS.
+
+### Installation
+
+```bash
+npm install
+```
+
+### Verwenden
+
+```bash
+# Blätter und erkannte Spaltentypen anzeigen (verändert nichts)
+node src/cli.js daten.xlsx --list
+
+# Anonymisieren, Schlüsselspalten ausnehmen
+node src/cli.js daten.xlsx --keep "KundenID,Bestellnummer"
+
+# In eine neue Datei schreiben, bestimmtes Blatt, reproduzierbar
+node src/cli.js daten.xlsx --sheet Kunden --out anonym.xlsx --seed 42
+```
+
+| Option | Wirkung |
+|--------|---------|
+| `--list` | Blätter, Spalten und erkannte Inhaltsart anzeigen |
+| `--sheet <name>` | Arbeitsblatt wählen (Standard: erstes Blatt) |
+| `--keep <a,b,c>` | Spalten, die **unverändert** bleiben |
+| `--out <datei>` | Ergebnis in neue Datei statt Überschreiben |
+| `--no-backup` | Keine Sicherungskopie anlegen |
+| `--no-consistent` | Gleiche Werte dürfen unterschiedliche Ersatzwerte erhalten |
+| `--seed <zahl>` | Fester Startwert für reproduzierbare Läufe |
+| `--dry-run` | Nur anzeigen, was passieren würde |
+
+> **Merksatz (wie in der GUI):**
+> **In `--keep` genannt = bleibt unverändert** · **alles andere wird verschleiert**
+
+### Verhalten
+
+- **Typerkennung** aus Spaltenname *und* Inhalt: E-Mail, Telefon, Vor-/Nachname,
+  Straße, PLZ, Ort, Land, Firma, IBAN, Text, Ganzzahl, Dezimal, Datum, Ja/Nein.
+- **Typ- und größenordnungserhaltend**: Zahlen bleiben Zahlen ähnlicher Größe,
+  Datumswerte werden um bis zu ±365 Tage verschoben, Texte behalten ihre Länge.
+- **Zellformate bleiben erhalten** (Datums- und Währungsformate).
+- **`NULL`/Leerwerte bleiben erhalten**, **Formelspalten werden übersprungen** –
+  analog zu den nicht beschreibbaren Feldern der Access-Variante.
+- **Konsistente Ersetzung** (Standard): derselbe Ausgangswert erhält innerhalb
+  einer Spalte denselben Ersatzwert. Dadurch bleiben Gruppierungen und
+  Verknüpfungen über die Spalte hinweg auswertbar. Abschaltbar mit
+  `--no-consistent`.
+- **Sicherungskopie** wird standardmäßig angelegt, wenn die Originaldatei
+  überschrieben wird.
+
+### Tests
+
+```bash
+npm test
+```
+
+### Grenzen
+
+- Nur **Excel** (`.xlsx`/`.xlsm`). Access (`.accdb`/`.mdb`) bleibt beim
+  PowerShell-Skript – zum Schreiben von Access ist weiterhin ACE-OLEDB nötig.
+- Das alte `.xls`-Format (BIFF) wird nicht gelesen; vorher in `.xlsx` umwandeln.
+- Noch ohne grafische Oberfläche.
+- `npm audit` meldet einen mittelschweren Hinweis auf `uuid` (transitive
+  Abhängigkeit von `exceljs`). Er betrifft die UUID-Varianten v3/v5/v6 mit
+  eigenem Puffer, die hier nicht verwendet werden; die einzige angebotene
+  „Behebung" wäre ein Downgrade auf `exceljs` 3.x.
+
 ## Mitgelieferte Node.js-Laufzeit
 
 Im Repository liegt die offizielle, portable Node.js-Laufzeit für Windows:
