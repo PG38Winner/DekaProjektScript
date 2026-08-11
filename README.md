@@ -275,9 +275,9 @@ mit. Wer nur den aktuellen Stand braucht, spart das:
 
 | Bezugsweg | Gesamt | davon `.git` |
 |-----------|--------|--------------|
-| *Code → Download ZIP* auf GitHub | nur Inhalt, keine Historie | – |
-| `git clone --depth 1` | 149 MB | 38 MB |
-| `git clone` (vollständig) | 183 MB | 73 MB |
+| *Code → Download ZIP* auf GitHub | 92 MB, keine Historie | – |
+| `git clone --depth 1` | 126 MB | 34 MB |
+| `git clone` (vollständig) | 164 MB | 72 MB |
 
 ```bash
 git clone --depth 1 https://github.com/PG38Winner/DekaProjektScript.git
