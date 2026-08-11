@@ -97,6 +97,25 @@ Spaltennamen in `--keep` werden ohne Rücksicht auf Groß-/Kleinschreibung
 verglichen; ein unbekannter Name bricht den Lauf ab, statt ihn stillschweigend
 zu ignorieren.
 
+### Geschwindigkeit
+
+`--list` liest die Datei **nicht** vollständig ein. Es wertet nur die ersten
+200 Datenzeilen je Blatt aus – mehr braucht die Typerkennung nicht – und holt
+die Zeilenzahl aus dem Kopf des Blattes, ohne ihn zu entpacken. Gemessen an
+einer Datei mit 200.000 Zeilen × 30 Spalten (29 MB):
+
+| | vollständiges Einlesen | `--list` heute |
+|---|---|---|
+| Dauer | 27,9 s | 1,4 s |
+| Arbeitsspeicher | 2,4 GB | gering |
+
+Steht die Zeilenzahl nicht im Dateikopf, meldet `--list` „Zeilenzahl
+unbekannt", statt die Datei dafür komplett zu lesen.
+
+Das **Anonymisieren** muss die Datei zwangsläufig ganz einlesen und wieder
+schreiben – dort bleibt es bei der Dauer, die Dateigröße und Excel-Format
+vorgeben.
+
 ### Mehrere Arbeitsblätter
 
 Ohne `--sheet` werden **alle** Arbeitsblätter der Datei verarbeitet – also
@@ -185,7 +204,7 @@ Makros verloren – auch darauf wird hingewiesen.
 npm test
 ```
 
-36 Tests zu Typerkennung, Werterhaltung, Dateibehandlung, Makro-Erhalt und
+38 Tests zu Typerkennung, Werterhaltung, Dateibehandlung, Makro-Erhalt und
 Gleichlauf von Bündel und Quellcode. Die Bündel-Tests werden übersprungen,
 solange `dist/` nicht gebaut ist.
 
@@ -225,6 +244,9 @@ solange `dist/` nicht gebaut ist.
 | `dist/anonymize-xlsx.cjs` | Eigenständiges Bündel, erzeugt mit `npm run build` |
 | `src/cli.js` | Kommandozeile, Ausgabe der Berichte |
 | `src/anonymize.js` | Arbeitsmappe lesen, ersetzen, schreiben |
+| `src/inspect.js` | schnelle Struktur-Analyse für `--list` |
+| `src/ooxml.js` | direkter Zugriff auf den Dateiaufbau |
+| `src/cells.js` | Umgang mit den Zellformen von exceljs |
 | `src/classify.js` | Erkennung der Inhaltsart je Spalte |
 | `src/generators.js` | Erzeugung der Ersatzwerte |
 | `src/macros.js` | Erhalt des VBA-Projekts bei `.xlsm` |

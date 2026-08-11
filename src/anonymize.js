@@ -8,36 +8,15 @@ import { access, constants, copyFile } from 'node:fs/promises';
 import path from 'node:path';
 import ExcelJS from 'exceljs';
 
-import { classifyColumn, KINDS } from './classify.js';
+import { KINDS } from './classify.js';
 import { createGenerator } from './generators.js';
 import { readMacroParts, restoreMacroParts } from './macros.js';
+import { readColumns } from './inspect.js';
+import { toPlainValue, isReadOnlyValue } from './cells.js';
 
-/** Wie viele Werte pro Spalte fuer die Typerkennung herangezogen werden. */
-const SAMPLE_SIZE = 200;
-
-/**
- * Liest die Struktur der Datei aus: Arbeitsblaetter, Spaltennamen, erkannte
- * Inhaltsart. Entspricht dem "Laden"-Schritt der grafischen Oberflaeche.
- *
- * @param {string} file Pfad zur .xlsx/.xlsm-Datei.
- */
-export async function inspectWorkbook(file) {
-  const workbook = await readWorkbook(file);
-
-  return workbook.worksheets.map((sheet) => {
-    const columns = readColumns(sheet);
-    return {
-      name: sheet.name,
-      rowCount: Math.max(sheet.rowCount - 1, 0), // ohne Kopfzeile
-      columns: columns.map((column) => ({
-        header: column.header,
-        index: column.index,
-        kind: column.kind,
-        readOnly: column.readOnly,
-      })),
-    };
-  });
-}
+// `--list` kommt ohne vollstaendiges Einlesen der Datei aus und liegt deshalb
+// in einem eigenen Modul.
+export { inspectWorkbook } from './inspect.js';
 
 /**
  * Anonymisiert eine Arbeitsmappe.
@@ -103,6 +82,7 @@ export async function anonymizeWorkbook({
       continue;
     }
 
+    const todo = [];
     for (const column of columns) {
       const kept = keepSet.has(normalizeHeader(column.header));
       const columnEntry = {
@@ -113,8 +93,7 @@ export async function anonymizeWorkbook({
       };
 
       if (!kept && !column.readOnly && column.kind !== KINDS.EMPTY) {
-        columnEntry.changed = anonymizeColumn(sheet, column, generate);
-        entry.changed += columnEntry.changed;
+        todo.push({ column, entry: columnEntry });
       } else if (!kept && !column.readOnly && column.kind === KINDS.EMPTY) {
         columnEntry.status = 'uebersprungen (leer)';
       }
@@ -122,6 +101,7 @@ export async function anonymizeWorkbook({
       entry.columns.push(columnEntry);
     }
 
+    entry.changed = anonymizeSheet(sheet, todo, generate);
     report.changed += entry.changed;
     report.rows += entry.rows;
     report.sheets.push(entry);
@@ -172,27 +152,43 @@ async function handleMacros(macro, target, report) {
   }
 }
 
-/** Ersetzt die Werte einer Spalte; gibt die Anzahl geaenderter Zellen zurueck. */
-function anonymizeColumn(sheet, column, generate) {
+/**
+ * Ersetzt die Werte aller vorgemerkten Spalten eines Blattes in einem
+ * Durchlauf ueber die Zeilen und gibt die Anzahl geaenderter Zellen zurueck.
+ *
+ * Ein Durchlauf je Spalte waere bei breiten Blaettern ein Vielfaches an
+ * Arbeit - die Zeilen werden deshalb genau einmal besucht.
+ */
+function anonymizeSheet(sheet, todo, generate) {
+  if (!todo.length) return 0;
+
   // Der Schluessel ist bewusst blattuebergreifend: eine Spalte gleichen Namens
   // und gleicher Art verknuepft in der Regel zwei Blaetter (KundenID in
   // "Kunden" und in "Bestellungen"). Nur mit gemeinsamem Schluessel bleibt die
   // Verknuepfung nach der Anonymisierung bestehen.
-  const columnKey = `${column.kind}:${normalizeHeader(column.header)}`;
+  const targets = todo.map(({ column, entry }) => ({
+    index: column.index,
+    kind: column.kind,
+    key: `${column.kind}:${normalizeHeader(column.header)}`,
+    entry,
+  }));
+
   let changed = 0;
 
   sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
     if (rowNumber === 1) return; // Kopfzeile
 
-    const cell = row.getCell(column.index);
-    const original = toPlainValue(cell.value);
+    for (const target of targets) {
+      const cell = row.getCell(target.index);
+      const original = toPlainValue(cell.value);
 
-    // NULL- und Leerwerte bleiben erhalten, Formeln werden nicht angetastet.
-    if (original === null || isReadOnlyValue(cell.value)) return;
+      // NULL- und Leerwerte bleiben erhalten, Formeln werden nicht angetastet.
+      if (original === null || isReadOnlyValue(cell.value)) continue;
 
-    const replacement = generate(column.kind, original, columnKey);
-    writeCell(cell, replacement);
-    changed += 1;
+      writeCell(cell, generate(target.kind, original, target.key));
+      target.entry.changed += 1;
+      changed += 1;
+    }
   });
 
   return changed;
@@ -219,75 +215,8 @@ function writeCell(cell, replacement) {
   cell.value = replacement;
 }
 
-/** Liest die Kopfzeile und leitet fuer jede Spalte die Inhaltsart ab. */
-function readColumns(sheet) {
-  const headerRow = sheet.getRow(1);
-  const columns = [];
 
-  headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
-    const header = toPlainValue(cell.value);
-    if (header === null || String(header).trim() === '') return;
 
-    const { samples, readOnly } = collectSamples(sheet, colNumber);
-    columns.push({
-      header: String(header).trim(),
-      index: colNumber,
-      kind: classifyColumn(String(header), samples),
-      readOnly,
-    });
-  });
-
-  return columns;
-}
-
-/**
- * Sammelt Beispielwerte einer Spalte fuer die Typerkennung und stellt fest, ob
- * die Spalte beschreibbar ist. Eine Spalte gilt als schreibgeschuetzt, wenn sie
- * ausschliesslich aus Formeln besteht - genau wie die berechneten Felder, die
- * die Access-Variante ueberspringt.
- */
-function collectSamples(sheet, colNumber) {
-  const samples = [];
-  let nonEmpty = 0;
-  let readOnlyCount = 0;
-
-  sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
-    if (rowNumber === 1 || samples.length >= SAMPLE_SIZE) return;
-
-    const raw = row.getCell(colNumber).value;
-    const value = toPlainValue(raw);
-    if (value === null || value === '') return;
-
-    nonEmpty += 1;
-    if (isReadOnlyValue(raw)) readOnlyCount += 1;
-    else samples.push(value);
-  });
-
-  return { samples, readOnly: nonEmpty > 0 && readOnlyCount === nonEmpty };
-}
-
-/** Formeln und Fehlerwerte werden nicht ueberschrieben. */
-function isReadOnlyValue(raw) {
-  if (!raw || typeof raw !== 'object') return false;
-  return 'formula' in raw || 'sharedFormula' in raw || 'error' in raw;
-}
-
-/**
- * Reduziert die verschiedenen exceljs-Zellrepraesentationen auf einen einfachen
- * JavaScript-Wert. Gibt `null` fuer leere Zellen zurueck.
- */
-function toPlainValue(raw) {
-  if (raw === null || raw === undefined) return null;
-  if (raw instanceof Date) return raw;
-  if (typeof raw !== 'object') return raw;
-
-  if ('richText' in raw) return raw.richText.map((part) => part.text).join('');
-  if ('text' in raw) return raw.text;
-  if ('formula' in raw || 'sharedFormula' in raw) return raw.result ?? null;
-  if ('error' in raw) return null;
-
-  return String(raw);
-}
 
 /** Ohne Namen alle Arbeitsblaetter, sonst genau das genannte. */
 function selectSheets(workbook, sheetName) {

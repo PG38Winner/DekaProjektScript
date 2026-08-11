@@ -92,7 +92,10 @@ async function printStructure(file) {
   const sheets = await inspectWorkbook(file);
 
   for (const sheet of sheets) {
-    console.log(`\nArbeitsblatt: ${sheet.name}  (${sheet.rowCount} Datenzeilen)`);
+    // Die Zeilenzahl stammt aus dem Kopf des Blattes; fehlt sie dort, wird sie
+    // nicht eigens ermittelt - das wuerde die Datei komplett einlesen.
+    const rows = sheet.rowCount === null ? 'Zeilenzahl unbekannt' : `${sheet.rowCount} Datenzeilen`;
+    console.log(`\nArbeitsblatt: ${sheet.name}  (${rows})`);
     if (!sheet.columns.length) {
       console.log('  (keine Kopfzeile mit Spaltennamen gefunden)');
       continue;

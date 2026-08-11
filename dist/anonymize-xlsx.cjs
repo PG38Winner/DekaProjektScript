@@ -64614,7 +64614,7 @@ var require_workbook_reader = __commonJS({
 // node_modules/exceljs/lib/exceljs.nodejs.js
 var require_exceljs_nodejs = __commonJS({
   "node_modules/exceljs/lib/exceljs.nodejs.js"(exports2, module2) {
-    var ExcelJS2 = {
+    var ExcelJS3 = {
       Workbook: require_workbook(),
       ModelContainer: require_modelcontainer(),
       stream: {
@@ -64624,8 +64624,8 @@ var require_exceljs_nodejs = __commonJS({
         }
       }
     };
-    Object.assign(ExcelJS2, require_enums());
-    module2.exports = ExcelJS2;
+    Object.assign(ExcelJS3, require_enums());
+    module2.exports = ExcelJS3;
   }
 });
 
@@ -64645,9 +64645,9 @@ var require_excel = __commonJS({
 var import_node_util = require("node:util");
 
 // src/anonymize.js
-var import_promises2 = require("node:fs/promises");
+var import_promises3 = require("node:fs/promises");
 var import_node_path = __toESM(require("node:path"), 1);
-var import_exceljs = __toESM(require_excel(), 1);
+var import_exceljs2 = __toESM(require_excel(), 1);
 
 // src/classify.js
 var KINDS = {
@@ -66743,8 +66743,73 @@ function buildText(original) {
 }
 
 // src/macros.js
+var import_promises2 = require("node:fs/promises");
+
+// src/ooxml.js
 var import_promises = require("node:fs/promises");
 var import_jszip = __toESM(require_lib3(), 1);
+async function openWorkbookZip(file) {
+  return import_jszip.default.loadAsync(await (0, import_promises.readFile)(file));
+}
+async function readText(zip, path2) {
+  const entry = zip.file(path2);
+  return entry ? entry.async("string") : null;
+}
+function findInPartHead(zip, path2, pattern, maxBytes = 65536) {
+  const entry = zip.file(path2);
+  if (!entry) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    let buffer = "";
+    let settled = false;
+    const stream = entry.nodeStream("nodebuffer");
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      stream.destroy();
+      resolve(result);
+    };
+    stream.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+      const match = pattern.exec(buffer);
+      if (match) finish(match);
+      else if (buffer.length > maxBytes) finish(null);
+    });
+    stream.on("end", () => finish(null));
+    stream.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
+  });
+}
+function listSheets(workbookXml) {
+  if (!workbookXml) return [];
+  return [...workbookXml.matchAll(/<sheet\b[^>]*\/?>/g)].map((match) => {
+    const tag = match[0];
+    const name = /\bname="([^"]*)"/.exec(tag);
+    const rid = /\br:id="([^"]*)"/.exec(tag);
+    return name && rid ? { name: decodeXml(name[1]), rid: rid[1] } : null;
+  }).filter(Boolean);
+}
+function resolveRelationship(relsXml, rid) {
+  if (!relsXml) return null;
+  const pattern = new RegExp(`<Relationship\\b[^>]*Id="${rid}"[^>]*>`);
+  const tag = pattern.exec(relsXml);
+  if (!tag) return null;
+  const target = /\bTarget="([^"]*)"/.exec(tag[0]);
+  return target ? target[1] : null;
+}
+function sheetPartPath(target) {
+  return `xl/${String(target).replace(/^\/?xl\//, "")}`;
+}
+function decodeXml(value) {
+  return String(value).replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+}
+function escapeXml(value) {
+  return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// src/macros.js
 var VBA_PART = "xl/vbaProject.bin";
 var VBA_SIGNATURE_PART = "xl/vbaProjectSignature.bin";
 var VBA_CONTENT_TYPE = "application/vnd.ms-office.vbaProject";
@@ -66760,7 +66825,7 @@ var HARMLESS_LOSSES = [
   /\/$/
 ];
 async function readMacroParts(file) {
-  const zip = await import_jszip.default.loadAsync(await (0, import_promises.readFile)(file));
+  const zip = await openWorkbookZip(file);
   const parts = Object.keys(zip.files).filter((name) => !zip.files[name].dir);
   const vbaEntry = zip.file(VBA_PART);
   if (!vbaEntry) return null;
@@ -66774,7 +66839,7 @@ async function readMacroParts(file) {
   };
 }
 async function restoreMacroParts(file, macro) {
-  const zip = await import_jszip.default.loadAsync(await (0, import_promises.readFile)(file));
+  const zip = await openWorkbookZip(file);
   zip.file(VBA_PART, macro.vba);
   if (macro.signature) zip.file(VBA_SIGNATURE_PART, macro.signature);
   zip.file("[Content_Types].xml", patchContentTypes(
@@ -66800,7 +66865,7 @@ async function restoreMacroParts(file, macro) {
     // Excel erwartet den Typ-Katalog als ersten Eintrag im Archiv.
     mimeType: void 0
   });
-  await (0, import_promises.writeFile)(file, rebuilt);
+  await (0, import_promises2.writeFile)(file, rebuilt);
   const present = new Set(Object.keys(zip.files));
   return macro.originalParts.filter(
     (name) => !present.has(name) && !HARMLESS_LOSSES.some((re2) => re2.test(name))
@@ -66812,7 +66877,7 @@ async function readSheetCodeNames(zip, workbookXml) {
   for (const sheet of listSheets(workbookXml)) {
     const target = resolveRelationship(rels, sheet.rid);
     if (!target) continue;
-    const sheetXml = await readText(zip, `xl/${target.replace(/^\/?xl\//, "")}`);
+    const sheetXml = await readText(zip, sheetPartPath(target));
     const codeName = readAttribute(sheetXml, "sheetPr", "codeName");
     if (codeName) codeNames.set(sheet.name, codeName);
   }
@@ -66826,7 +66891,7 @@ async function restoreSheetCodeNames(zip, workbookXml, codeNames) {
     if (!codeName) continue;
     const target = resolveRelationship(rels, sheet.rid);
     if (!target) continue;
-    const path2 = `xl/${target.replace(/^\/?xl\//, "")}`;
+    const path2 = sheetPartPath(target);
     const sheetXml = await readText(zip, path2);
     if (!sheetXml) continue;
     zip.file(path2, setSheetCodeName(sheetXml, codeName));
@@ -66854,23 +66919,6 @@ function patchWorkbookRels(xml) {
   const relationship = `<Relationship Id="rId${next}" Type="${VBA_RELATIONSHIP}" Target="vbaProject.bin"/>`;
   return xml.replace("</Relationships>", `${relationship}</Relationships>`);
 }
-function listSheets(workbookXml) {
-  if (!workbookXml) return [];
-  return [...workbookXml.matchAll(/<sheet\b[^>]*\/?>/g)].map((match) => {
-    const tag = match[0];
-    const name = /\bname="([^"]*)"/.exec(tag);
-    const rid = /\br:id="([^"]*)"/.exec(tag);
-    return name && rid ? { name: decodeXml(name[1]), rid: rid[1] } : null;
-  }).filter(Boolean);
-}
-function resolveRelationship(relsXml, rid) {
-  if (!relsXml) return null;
-  const pattern = new RegExp(`<Relationship\\b[^>]*Id="${rid}"[^>]*>`);
-  const tag = pattern.exec(relsXml);
-  if (!tag) return null;
-  const target = /\bTarget="([^"]*)"/.exec(tag[0]);
-  return target ? target[1] : null;
-}
 function setSheetCodeName(xml, codeName) {
   if (/<sheetPr\b/.test(xml)) return setAttribute(xml, "sheetPr", "codeName", codeName);
   return xml.replace(/(<worksheet\b[^>]*>)/, `$1<sheetPr codeName="${escapeXml(codeName)}"/>`);
@@ -66892,36 +66940,207 @@ function setAttribute(xml, tagName, attribute, value) {
   const replacement = existing.test(tag[0]) ? tag[0].replace(existing, `${attribute}="${escaped}"`) : tag[0].replace(/(\/?)>$/, ` ${attribute}="${escaped}"$1>`);
   return xml.replace(tag[0], replacement);
 }
-async function readText(zip, path2) {
-  const entry = zip.file(path2);
-  return entry ? entry.async("string") : null;
+
+// src/inspect.js
+var import_exceljs = __toESM(require_excel(), 1);
+
+// src/cells.js
+function toPlainValue(raw) {
+  if (raw === null || raw === void 0) return null;
+  if (raw instanceof Date) return raw;
+  if (typeof raw !== "object") return raw;
+  if ("richText" in raw) return raw.richText.map((part) => part.text).join("");
+  if ("text" in raw) return raw.text;
+  if ("formula" in raw || "sharedFormula" in raw) return raw.result ?? null;
+  if ("error" in raw) return null;
+  return String(raw);
 }
-function escapeXml(value) {
-  return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-function decodeXml(value) {
-  return String(value).replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+function isReadOnlyValue(raw) {
+  if (!raw || typeof raw !== "object") return false;
+  return "formula" in raw || "sharedFormula" in raw || "error" in raw;
 }
 
-// src/anonymize.js
+// src/inspect.js
 var SAMPLE_SIZE = 200;
 async function inspectWorkbook(file) {
-  const workbook = await readWorkbook(file);
-  return workbook.worksheets.map((sheet) => {
-    const columns = readColumns(sheet);
+  const rowCounts = await readRowCounts(file);
+  try {
+    return await inspectByStream(file, rowCounts);
+  } catch (error) {
+    if (!isStreamLimitation(error)) throw error;
+    return inspectByFullRead(file, rowCounts);
+  }
+}
+async function inspectByStream(file, rowCounts) {
+  const sheets = [];
+  const reader = new import_exceljs.default.stream.xlsx.WorkbookReader(file, {
+    worksheets: "emit",
+    entries: "emit",
+    sharedStrings: "cache",
+    // Die Formatvorlagen werden gebraucht: ob eine Zahl ein Datum ist, steht
+    // nicht im Wert, sondern im Zahlenformat der Zelle.
+    styles: "cache"
+  });
+  for await (const worksheet of reader) {
+    sheets.push({
+      name: worksheet.name,
+      rowCount: rowCounts.get(worksheet.name) ?? null,
+      columns: await scanSheet(worksheet)
+    });
+  }
+  if (!sheets.length) throw new StreamLimitation("kein Arbeitsblatt im Datenstrom gefunden");
+  return sheets;
+}
+async function inspectByFullRead(file, rowCounts) {
+  const workbook = new import_exceljs.default.Workbook();
+  await workbook.xlsx.readFile(file);
+  return workbook.worksheets.map((sheet) => ({
+    name: sheet.name,
+    rowCount: rowCounts.get(sheet.name) ?? Math.max(sheet.rowCount - 1, 0),
+    columns: readColumns(sheet)
+  }));
+}
+var StreamLimitation = class extends Error {
+};
+function isStreamLimitation(error) {
+  return error instanceof StreamLimitation || /reading 'sheets'|Cannot read properties of undefined/.test(error?.message ?? "");
+}
+async function scanSheet(worksheet) {
+  let headers = null;
+  const samples = /* @__PURE__ */ new Map();
+  const counts = /* @__PURE__ */ new Map();
+  let dataRows = 0;
+  for await (const row of worksheet) {
+    if (row.number === 1) {
+      headers = row.values;
+      continue;
+    }
+    if (!headers) continue;
+    collectRow(row, samples, counts);
+    dataRows += 1;
+    if (dataRows >= SAMPLE_SIZE) break;
+  }
+  if (!headers) return [];
+  const columns = [];
+  headers.forEach((header, index) => {
+    if (header === null || header === void 0) return;
+    const name = String(toPlainValue(header) ?? "").trim();
+    if (!name) return;
+    const count = counts.get(index) ?? { nonEmpty: 0, readOnly: 0 };
+    columns.push({
+      header: name,
+      index,
+      kind: classifyColumn(name, samples.get(index) ?? []),
+      readOnly: count.nonEmpty > 0 && count.readOnly === count.nonEmpty
+    });
+  });
+  return columns;
+}
+function collectRow(row, samples, counts) {
+  row.eachCell({ includeEmpty: false }, (cell, index) => {
+    const value = toPlainValue(cell.value);
+    if (value === null || value === "") return;
+    let count = counts.get(index);
+    if (!count) {
+      count = { nonEmpty: 0, readOnly: 0 };
+      counts.set(index, count);
+    }
+    count.nonEmpty += 1;
+    if (isReadOnlyValue(cell.value)) {
+      count.readOnly += 1;
+      return;
+    }
+    let list = samples.get(index);
+    if (!list) {
+      list = [];
+      samples.set(index, list);
+    }
+    list.push(value);
+  });
+}
+async function readRowCounts(file) {
+  const counts = /* @__PURE__ */ new Map();
+  try {
+    const zip = await openWorkbookZip(file);
+    const workbookXml = await readText(zip, "xl/workbook.xml");
+    const rels = await readText(zip, "xl/_rels/workbook.xml.rels");
+    for (const sheet of listSheets(workbookXml)) {
+      const target = resolveRelationship(rels, sheet.rid);
+      if (!target) continue;
+      const match = await findInPartHead(
+        zip,
+        sheetPartPath(target),
+        /<dimension\b[^>]*\bref="([^"]*)"/
+      );
+      const lastRow = match ? lastRowOfRange(match[1]) : null;
+      if (lastRow !== null) counts.set(sheet.name, Math.max(lastRow - 1, 0));
+    }
+  } catch {
+  }
+  return counts;
+}
+function lastRowOfRange(ref) {
+  const end = String(ref).split(":").pop();
+  const match = /(\d+)$/.exec(end ?? "");
+  return match ? Number(match[1]) : null;
+}
+function readColumns(sheet) {
+  const headerRow = sheet.getRow(1);
+  const headers = /* @__PURE__ */ new Map();
+  headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+    const header = toPlainValue(cell.value);
+    if (header === null || String(header).trim() === "") return;
+    headers.set(colNumber, String(header).trim());
+  });
+  if (!headers.size) return [];
+  const { samples, counts } = collectSamples(sheet, headers);
+  return [...headers].map(([index, header]) => {
+    const count = counts.get(index) ?? { nonEmpty: 0, readOnly: 0 };
     return {
-      name: sheet.name,
-      rowCount: Math.max(sheet.rowCount - 1, 0),
-      // ohne Kopfzeile
-      columns: columns.map((column) => ({
-        header: column.header,
-        index: column.index,
-        kind: column.kind,
-        readOnly: column.readOnly
-      }))
+      header,
+      index,
+      kind: classifyColumn(header, samples.get(index) ?? []),
+      // Eine Spalte gilt als schreibgeschuetzt, wenn sie ausschliesslich aus
+      // Formeln besteht - wie die berechneten Felder der Access-Variante.
+      readOnly: count.nonEmpty > 0 && count.readOnly === count.nonEmpty
     };
   });
 }
+function collectSamples(sheet, headers) {
+  const samples = /* @__PURE__ */ new Map();
+  const counts = /* @__PURE__ */ new Map();
+  let dataRows = 0;
+  const lastRow = Math.min(sheet.rowCount, SAMPLE_SIZE + 1);
+  for (let rowNumber = 2; rowNumber <= lastRow && dataRows < SAMPLE_SIZE; rowNumber += 1) {
+    const row = sheet.getRow(rowNumber);
+    if (!row) continue;
+    dataRows += 1;
+    for (const colNumber of headers.keys()) {
+      const raw = row.getCell(colNumber).value;
+      const value = toPlainValue(raw);
+      if (value === null || value === "") continue;
+      let count = counts.get(colNumber);
+      if (!count) {
+        count = { nonEmpty: 0, readOnly: 0 };
+        counts.set(colNumber, count);
+      }
+      count.nonEmpty += 1;
+      if (isReadOnlyValue(raw)) {
+        count.readOnly += 1;
+        continue;
+      }
+      let list = samples.get(colNumber);
+      if (!list) {
+        list = [];
+        samples.set(colNumber, list);
+      }
+      list.push(value);
+    }
+  }
+  return { samples, counts };
+}
+
+// src/anonymize.js
 async function anonymizeWorkbook({
   file,
   sheet: sheetName,
@@ -66960,6 +67179,7 @@ async function anonymizeWorkbook({
       report.sheets.push(entry);
       continue;
     }
+    const todo = [];
     for (const column of columns) {
       const kept = keepSet.has(normalizeHeader(column.header));
       const columnEntry = {
@@ -66969,13 +67189,13 @@ async function anonymizeWorkbook({
         changed: 0
       };
       if (!kept && !column.readOnly && column.kind !== KINDS.EMPTY) {
-        columnEntry.changed = anonymizeColumn(sheet, column, generate);
-        entry.changed += columnEntry.changed;
+        todo.push({ column, entry: columnEntry });
       } else if (!kept && !column.readOnly && column.kind === KINDS.EMPTY) {
         columnEntry.status = "uebersprungen (leer)";
       }
       entry.columns.push(columnEntry);
     }
+    entry.changed = anonymizeSheet(sheet, todo, generate);
     report.changed += entry.changed;
     report.rows += entry.rows;
     report.sheets.push(entry);
@@ -67006,17 +67226,25 @@ async function handleMacros(macro, target, report) {
     );
   }
 }
-function anonymizeColumn(sheet, column, generate) {
-  const columnKey = `${column.kind}:${normalizeHeader(column.header)}`;
+function anonymizeSheet(sheet, todo, generate) {
+  if (!todo.length) return 0;
+  const targets = todo.map(({ column, entry }) => ({
+    index: column.index,
+    kind: column.kind,
+    key: `${column.kind}:${normalizeHeader(column.header)}`,
+    entry
+  }));
   let changed = 0;
   sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
     if (rowNumber === 1) return;
-    const cell = row.getCell(column.index);
-    const original = toPlainValue(cell.value);
-    if (original === null || isReadOnlyValue(cell.value)) return;
-    const replacement = generate(column.kind, original, columnKey);
-    writeCell(cell, replacement);
-    changed += 1;
+    for (const target of targets) {
+      const cell = row.getCell(target.index);
+      const original = toPlainValue(cell.value);
+      if (original === null || isReadOnlyValue(cell.value)) continue;
+      writeCell(cell, generate(target.kind, original, target.key));
+      target.entry.changed += 1;
+      changed += 1;
+    }
   });
   return changed;
 }
@@ -67031,51 +67259,6 @@ function writeCell(cell, replacement) {
     return;
   }
   cell.value = replacement;
-}
-function readColumns(sheet) {
-  const headerRow = sheet.getRow(1);
-  const columns = [];
-  headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
-    const header = toPlainValue(cell.value);
-    if (header === null || String(header).trim() === "") return;
-    const { samples, readOnly } = collectSamples(sheet, colNumber);
-    columns.push({
-      header: String(header).trim(),
-      index: colNumber,
-      kind: classifyColumn(String(header), samples),
-      readOnly
-    });
-  });
-  return columns;
-}
-function collectSamples(sheet, colNumber) {
-  const samples = [];
-  let nonEmpty = 0;
-  let readOnlyCount = 0;
-  sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
-    if (rowNumber === 1 || samples.length >= SAMPLE_SIZE) return;
-    const raw = row.getCell(colNumber).value;
-    const value = toPlainValue(raw);
-    if (value === null || value === "") return;
-    nonEmpty += 1;
-    if (isReadOnlyValue(raw)) readOnlyCount += 1;
-    else samples.push(value);
-  });
-  return { samples, readOnly: nonEmpty > 0 && readOnlyCount === nonEmpty };
-}
-function isReadOnlyValue(raw) {
-  if (!raw || typeof raw !== "object") return false;
-  return "formula" in raw || "sharedFormula" in raw || "error" in raw;
-}
-function toPlainValue(raw) {
-  if (raw === null || raw === void 0) return null;
-  if (raw instanceof Date) return raw;
-  if (typeof raw !== "object") return raw;
-  if ("richText" in raw) return raw.richText.map((part) => part.text).join("");
-  if ("text" in raw) return raw.text;
-  if ("formula" in raw || "sharedFormula" in raw) return raw.result ?? null;
-  if ("error" in raw) return null;
-  return String(raw);
 }
 function selectSheets(workbook, sheetName) {
   if (!workbook.worksheets.length) throw new Error("Die Datei enthaelt kein Arbeitsblatt.");
@@ -67103,11 +67286,11 @@ ${available}`
 }
 async function readWorkbook(file) {
   try {
-    await (0, import_promises2.access)(file, import_promises2.constants.R_OK);
+    await (0, import_promises3.access)(file, import_promises3.constants.R_OK);
   } catch {
     throw new Error(`Datei nicht gefunden oder nicht lesbar: ${file}`);
   }
-  const workbook = new import_exceljs.default.Workbook();
+  const workbook = new import_exceljs2.default.Workbook();
   try {
     await workbook.xlsx.readFile(file);
   } catch (error) {
@@ -67123,7 +67306,7 @@ async function createBackup(file) {
     import_node_path.default.dirname(resolved),
     `${import_node_path.default.basename(resolved, extension)}.backup-${stamp}${extension}`
   );
-  await (0, import_promises2.copyFile)(resolved, target);
+  await (0, import_promises3.copyFile)(resolved, target);
   return target;
 }
 function normalizeHeader(name) {
@@ -67201,8 +67384,9 @@ ${USAGE}`);
 async function printStructure(file) {
   const sheets = await inspectWorkbook(file);
   for (const sheet of sheets) {
+    const rows = sheet.rowCount === null ? "Zeilenzahl unbekannt" : `${sheet.rowCount} Datenzeilen`;
     console.log(`
-Arbeitsblatt: ${sheet.name}  (${sheet.rowCount} Datenzeilen)`);
+Arbeitsblatt: ${sheet.name}  (${rows})`);
     if (!sheet.columns.length) {
       console.log("  (keine Kopfzeile mit Spaltennamen gefunden)");
       continue;

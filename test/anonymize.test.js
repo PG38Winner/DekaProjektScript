@@ -1,8 +1,9 @@
 import { test, before, after, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readdir } from 'node:fs/promises';
+import { mkdtemp, rm, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import JSZip from 'jszip';
 
 import { anonymizeWorkbook, inspectWorkbook } from '../src/anonymize.js';
 import { createFixture, readSheet, ROWS } from './fixture.js';
@@ -50,6 +51,42 @@ describe('inspectWorkbook', () => {
     assert.equal(kinds.KundenID, 'integer');
   });
 
+  test('kommt ohne die Zeilenangabe im Dateikopf aus', async () => {
+    // Die Zeilenzahl stammt aus dem dimension-Eintrag des Blattes. Fehlt er,
+    // wird sie nicht erfunden - die Spalten muessen trotzdem erkannt werden.
+    const file = path.join(workdir, 'ohne-dimension.xlsx');
+    await createFixture(file);
+
+    const zip = await JSZip.loadAsync(await readFile(file));
+    const sheetXml = await zip.file('xl/worksheets/sheet1.xml').async('string');
+    zip.file('xl/worksheets/sheet1.xml', sheetXml.replace(/<dimension\b[^>]*\/>/, ''));
+    await writeFile(file, await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
+
+    const [kunden] = await inspectWorkbook(file);
+    assert.equal(kunden.rowCount, null, 'ohne Angabe bleibt die Zeilenzahl offen');
+    assert.ok(kunden.columns.length > 0, 'die Spalten werden trotzdem erkannt');
+    assert.equal(kunden.columns.find((c) => c.header === 'E-Mail').kind, 'email');
+  });
+
+  test('liest auch unkomprimiert abgelegte Dateien', async () => {
+    // Der Datenstrom-Leser von exceljs scheitert an Archiven ohne Komprimierung.
+    // Solche Dateien kommen vor, deshalb muss der Rueckfall greifen, statt den
+    // Lauf mit einer nichtssagenden Meldung abzubrechen.
+    const file = path.join(workdir, 'unkomprimiert.xlsx');
+    await createFixture(file);
+
+    const zip = await JSZip.loadAsync(await readFile(file));
+    await writeFile(file, await zip.generateAsync({ type: 'nodebuffer', compression: 'STORE' }));
+
+    const sheets = await inspectWorkbook(file);
+    assert.deepEqual(sheets.map((s) => s.name), ['Kunden', 'Bestellungen', 'Hinweise']);
+    assert.equal(sheets[0].rowCount, ROWS.length);
+
+    const kinds = Object.fromEntries(sheets[0].columns.map((c) => [c.header, c.kind]));
+    assert.equal(kinds['E-Mail'], 'email');
+    assert.equal(kinds.Geburtsdatum, 'date');
+  });
+
   test('markiert Formelspalten als schreibgeschuetzt', async () => {
     const [kunden] = await inspectWorkbook(source);
     const summe = kunden.columns.find((c) => c.header === 'Summe');
@@ -58,6 +95,21 @@ describe('inspectWorkbook', () => {
 });
 
 describe('anonymizeWorkbook', () => {
+  /**
+   * Ein Ersatzwert darf zufaellig dem Original gleichen - bei endlichen Pools
+   * (Orte, Vornamen) passiert das gelegentlich, und es waere sogar ein Mangel,
+   * solche Treffer auszuschliessen: dann waere bekannt, dass ein angezeigter
+   * Wert nie der echte ist. Geprueft wird deshalb, dass die Spalte als Ganzes
+   * ersetzt wurde, nicht jede einzelne Zelle.
+   */
+  function assertColumnReplaced(actual, original, label) {
+    const unchanged = actual.filter((value, index) => value === original[index]).length;
+    assert.ok(
+      unchanged <= 1,
+      `${label}: ${unchanged} von ${actual.length} Werten unveraendert - Spalte wurde nicht ersetzt`,
+    );
+  }
+
   test('ersetzt nicht ausgenommene Spalten und laesst --keep unveraendert', async () => {
     const file = await freshFile('keep.xlsx');
     await anonymizeWorkbook({ file, keep: ['KundenID'], backup: false, seed: 42 });
@@ -67,10 +119,11 @@ describe('anonymizeWorkbook', () => {
 
     rows.forEach((row, index) => {
       assert.equal(row.KundenID, ROWS[index][0], 'KundenID muss erhalten bleiben');
-      assert.notEqual(row.Vorname, ROWS[index][1]);
-      assert.notEqual(row.Nachname, ROWS[index][2]);
-      assert.notEqual(row.Ort, ROWS[index][7]);
     });
+
+    assertColumnReplaced(rows.map((r) => r.Vorname), ROWS.map((r) => r[1]), 'Vorname');
+    assertColumnReplaced(rows.map((r) => r.Nachname), ROWS.map((r) => r[2]), 'Nachname');
+    assertColumnReplaced(rows.map((r) => r.Ort), ROWS.map((r) => r[7]), 'Ort');
   });
 
   test('behaelt die Datentypen bei', async () => {

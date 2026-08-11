@@ -16,8 +16,12 @@
  *   4. `codeName`-Attribute           - damit VBA seine Blaetter wiederfindet
  */
 
-import { readFile, writeFile } from 'node:fs/promises';
-import JSZip from 'jszip';
+import { writeFile } from 'node:fs/promises';
+
+import {
+  openWorkbookZip, readText, listSheets, resolveRelationship, sheetPartPath,
+  escapeXml, decodeXml,
+} from './ooxml.js';
 
 const VBA_PART = 'xl/vbaProject.bin';
 const VBA_SIGNATURE_PART = 'xl/vbaProjectSignature.bin';
@@ -47,7 +51,7 @@ const HARMLESS_LOSSES = [
  * @returns {Promise<object|null>} `null`, wenn die Datei kein VBA-Projekt enthaelt.
  */
 export async function readMacroParts(file) {
-  const zip = await JSZip.loadAsync(await readFile(file));
+  const zip = await openWorkbookZip(file);
   const parts = Object.keys(zip.files).filter((name) => !zip.files[name].dir);
 
   const vbaEntry = zip.file(VBA_PART);
@@ -74,7 +78,7 @@ export async function readMacroParts(file) {
  * @returns {Promise<string[]>} Teile der Originaldatei, die trotzdem fehlen.
  */
 export async function restoreMacroParts(file, macro) {
-  const zip = await JSZip.loadAsync(await readFile(file));
+  const zip = await openWorkbookZip(file);
 
   zip.file(VBA_PART, macro.vba);
   if (macro.signature) zip.file(VBA_SIGNATURE_PART, macro.signature);
@@ -120,7 +124,7 @@ async function readSheetCodeNames(zip, workbookXml) {
     const target = resolveRelationship(rels, sheet.rid);
     if (!target) continue;
 
-    const sheetXml = await readText(zip, `xl/${target.replace(/^\/?xl\//, '')}`);
+    const sheetXml = await readText(zip, sheetPartPath(target));
     const codeName = readAttribute(sheetXml, 'sheetPr', 'codeName');
     if (codeName) codeNames.set(sheet.name, codeName);
   }
@@ -145,7 +149,7 @@ async function restoreSheetCodeNames(zip, workbookXml, codeNames) {
     const target = resolveRelationship(rels, sheet.rid);
     if (!target) continue;
 
-    const path = `xl/${target.replace(/^\/?xl\//, '')}`;
+    const path = sheetPartPath(target);
     const sheetXml = await readText(zip, path);
     if (!sheetXml) continue;
 
@@ -188,30 +192,6 @@ function patchWorkbookRels(xml) {
   return xml.replace('</Relationships>', `${relationship}</Relationships>`);
 }
 
-/** Liefert Blattname und Beziehungs-Id aller Arbeitsblaetter in Dokumentreihenfolge. */
-function listSheets(workbookXml) {
-  if (!workbookXml) return [];
-
-  return [...workbookXml.matchAll(/<sheet\b[^>]*\/?>/g)]
-    .map((match) => {
-      const tag = match[0];
-      const name = /\bname="([^"]*)"/.exec(tag);
-      const rid = /\br:id="([^"]*)"/.exec(tag);
-      return name && rid ? { name: decodeXml(name[1]), rid: rid[1] } : null;
-    })
-    .filter(Boolean);
-}
-
-function resolveRelationship(relsXml, rid) {
-  if (!relsXml) return null;
-  const pattern = new RegExp(`<Relationship\\b[^>]*Id="${rid}"[^>]*>`);
-  const tag = pattern.exec(relsXml);
-  if (!tag) return null;
-
-  const target = /\bTarget="([^"]*)"/.exec(tag[0]);
-  return target ? target[1] : null;
-}
-
 /**
  * `sheetPr` muss das erste Kindelement von `worksheet` sein - deshalb wird ein
  * fehlendes Element direkt hinter dem oeffnenden Tag eingefuegt.
@@ -249,19 +229,4 @@ function setAttribute(xml, tagName, attribute, value) {
   return xml.replace(tag[0], replacement);
 }
 
-async function readText(zip, path) {
-  const entry = zip.file(path);
-  return entry ? entry.async('string') : null;
-}
 
-function escapeXml(value) {
-  return String(value)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function decodeXml(value) {
-  return String(value)
-    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
-}
