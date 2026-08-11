@@ -66989,6 +66989,14 @@ async function inspectByStream(file, rowCounts) {
     });
   }
   if (!sheets.length) throw new StreamLimitation("kein Arbeitsblatt im Datenstrom gefunden");
+  if (sheets.some((sheet) => !sheet.name)) {
+    throw new StreamLimitation("Blattname im Datenstrom nicht lesbar");
+  }
+  const foundColumns = sheets.some((sheet) => sheet.columns.length);
+  const mayHaveData = sheets.some((sheet) => sheet.rowCount === null || sheet.rowCount > 0);
+  if (!foundColumns && mayHaveData) {
+    throw new StreamLimitation("keine Spalten im Datenstrom erkannt");
+  }
   return sheets;
 }
 async function inspectByFullRead(file, rowCounts) {

@@ -6,7 +6,7 @@ import path from 'node:path';
 import JSZip from 'jszip';
 
 import { anonymizeWorkbook, inspectWorkbook } from '../src/anonymize.js';
-import { createFixture, readSheet, ROWS } from './fixture.js';
+import { createFixture, createMacroFixture, readSheet, ROWS } from './fixture.js';
 
 let workdir;
 let source;
@@ -85,6 +85,15 @@ describe('inspectWorkbook', () => {
     const kinds = Object.fromEntries(sheets[0].columns.map((c) => [c.header, c.kind]));
     assert.equal(kinds['E-Mail'], 'email');
     assert.equal(kinds.Geburtsdatum, 'date');
+  });
+
+  test('zeigt bei Makro-Dateien ebenfalls alle Blaetter', async () => {
+    const file = path.join(workdir, 'liste.xlsm');
+    await createMacroFixture(file);
+
+    const sheets = await inspectWorkbook(file);
+    assert.deepEqual(sheets.map((s) => s.name), ['Kunden', 'Bestellungen', 'Hinweise']);
+    assert.ok(sheets[0].columns.length > 0);
   });
 
   test('markiert Formelspalten als schreibgeschuetzt', async () => {

@@ -64,9 +64,20 @@ async function inspectByStream(file, rowCounts) {
     });
   }
 
-  // Eine Datei ohne erkennbares Blatt deutet auf denselben Fehlerfall hin,
-  // nur ohne Ausnahme - dann lieber ebenfalls vollstaendig lesen.
+  // Der schnelle Weg darf nie zu einer leeren Anzeige fuehren. Liefert er kein
+  // Blatt, keinen Namen oder nirgends eine Spalte, obwohl die Datei Daten
+  // enthaelt, wird vollstaendig gelesen - lieber langsam und richtig.
   if (!sheets.length) throw new StreamLimitation('kein Arbeitsblatt im Datenstrom gefunden');
+  if (sheets.some((sheet) => !sheet.name)) {
+    throw new StreamLimitation('Blattname im Datenstrom nicht lesbar');
+  }
+
+  const foundColumns = sheets.some((sheet) => sheet.columns.length);
+  const mayHaveData = sheets.some((sheet) => sheet.rowCount === null || sheet.rowCount > 0);
+  if (!foundColumns && mayHaveData) {
+    throw new StreamLimitation('keine Spalten im Datenstrom erkannt');
+  }
+
   return sheets;
 }
 

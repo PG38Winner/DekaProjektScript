@@ -85,6 +85,21 @@ describe('Eigenstaendiges Buendel (dist/)', { skip: !bundleExists && 'dist/ nich
     assert.notEqual(rows[0].Nachname, 'Müller');
   });
 
+  test('zeigt mit --list alle Blaetter und Spalten an', async () => {
+    const file = path.join(workdir, 'liste.xlsx');
+    await createFixture(file);
+
+    const { stdout } = await run(process.execPath, [BUNDLE, file, '--list']);
+
+    for (const sheet of ['Kunden', 'Bestellungen', 'Hinweise']) {
+      assert.match(stdout, new RegExp(`Arbeitsblatt: ${sheet}`), `${sheet} fehlt in der Ausgabe`);
+    }
+    for (const [column, kind] of [['E-Mail', 'email'], ['Geburtsdatum', 'date'], ['Ort', 'city']]) {
+      assert.match(stdout, new RegExp(`${column}\\s+${kind}`), `${column} fehlt in der Ausgabe`);
+    }
+    assert.match(stdout, /Summe\s+Formel/);
+  });
+
   test('erhaelt auch im Buendel die Makros', async () => {
     const file = path.join(workdir, 'makro.xlsm');
     await createMacroFixture(file);
