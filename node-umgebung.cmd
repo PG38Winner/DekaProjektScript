@@ -1,8 +1,8 @@
 @echo off
 rem ---------------------------------------------------------------------------
 rem  Oeffnet eine Eingabeaufforderung, in der die mitgelieferte Node.js-Laufzeit
-rem  im Suchpfad liegt. Danach lassen sich "node" und "npm" direkt eintippen,
-rem  ohne Node.js zu installieren.
+rem  im Suchpfad liegt. Danach laesst sich "node" direkt eintippen, ohne
+rem  Node.js zu installieren.
 rem
 rem  Beenden mit "exit".
 rem ---------------------------------------------------------------------------
@@ -28,6 +28,9 @@ echo.
 echo  Beispiele:
 echo    node dist\anonymize-xlsx.cjs "C:\Daten\kunden.xlsx" --list
 echo    node dist\anonymize-xlsx.cjs "C:\Daten\kunden.xlsx" --keep "KundenID"
+echo.
+echo  Hinweis: npm ist nicht enthalten - fuer die Weiterentwicklung ein
+echo  vollstaendiges Node.js installieren.
 echo.
 
 cmd /k

@@ -30,7 +30,7 @@ Alles Nötige liegt gebrauchsfertig im Repository:
 
 | Bestandteil | Zweck |
 |-------------|-------|
-| `node-v24.19.0-win-x64\` | entpackte Node.js-Laufzeit für Windows (`node.exe`, `npm.cmd`) |
+| `node-v24.19.0-win-x64\node.exe` | Node.js-Laufzeit für Windows |
 | `dist\anonymize-xlsx.cjs` | das Werkzeug samt aller Abhängigkeiten in einer Datei |
 | `anonymisieren.cmd` | Startskript – findet die Laufzeit selbst |
 
@@ -39,7 +39,7 @@ Startskript dieses.
 
 **Befehle direkt eintippen:** `node-umgebung.cmd` öffnet eine
 Eingabeaufforderung, in der die mitgelieferte Laufzeit im Suchpfad liegt.
-Darin funktionieren `node` und `npm` ohne Installation:
+Darin funktioniert `node` ohne Installation:
 
 ```
 node dist\anonymize-xlsx.cjs "C:\Daten\kunden.xlsx" --list
@@ -207,7 +207,7 @@ solange `dist/` nicht gebaut ist.
 | `anonymisieren.cmd` | Start unter Windows |
 | `node-umgebung.cmd` | Eingabeaufforderung mit `node`/`npm` im Suchpfad |
 | `anonymisieren.sh` | Start unter Linux/macOS |
-| `node-v24.19.0-win-x64/` | entpackte Node.js-Laufzeit für Windows |
+| `node-v24.19.0-win-x64/node.exe` | Node.js-Laufzeit für Windows |
 | `dist/anonymize-xlsx.cjs` | Eigenständiges Bündel, erzeugt mit `npm run build` |
 | `src/cli.js` | Kommandozeile, Ausgabe der Berichte |
 | `src/anonymize.js` | Arbeitsmappe lesen, ersetzen, schreiben |
@@ -219,8 +219,15 @@ solange `dist/` nicht gebaut ist.
 ## Mitgelieferte Node.js-Laufzeit
 
 Im Repository liegt die offizielle, portable Node.js-Laufzeit für Windows –
-**bereits entpackt** im Ordner `node-v24.19.0-win-x64\`, mit `node.exe` und
-`npm.cmd` direkt darin. Sie läuft ohne Installation und ohne Administrator­rechte.
+**bereits entpackt** als `node-v24.19.0-win-x64\node.exe`. Sie läuft ohne
+Installation und ohne Administrator­rechte.
+
+**Reduziert auf `node.exe`:** Aus der Original-Auslieferung wurden `npm`,
+`npx` und `corepack` entfernt. Zum Ausführen des Werkzeugs werden sie nicht
+gebraucht, und ihre tief verschachtelten Ordner sprengten beim Entpacken unter
+Windows die Pfadlängengrenze von 260 Zeichen (`Fehler 0x80010135: Pfad zu
+lang`). Der längste Pfad im Repository ist dadurch von 125 auf 30 Zeichen
+gesunken. Für die Weiterentwicklung ein vollständiges Node.js installieren.
 
 - Version: **v24.19.0** (LTS „Krypton")
 - Quelle: <https://nodejs.org/dist/v24.19.0/node-v24.19.0-win-x64.zip>
@@ -245,10 +252,20 @@ Get-FileHash node-v24.19.0-win-x64\node.exe -Algorithm SHA256
 Wer der Kette nicht traut, lädt das Archiv selbst von nodejs.org, prüft es
 gegen `SHASUMS256.txt` und vergleicht die entpackte `node.exe`.
 
+### Falls das Entpacken scheitert
+
+Meldet Windows beim Entpacken `Fehler 0x80010135: Pfad zu lang`, ist der
+Zielpfad zu tief. Der Explorer legt beim *Alle extrahieren* standardmäßig einen
+Unterordner mit dem Namen des Archivs an – und das GitHub-ZIP enthält bereits
+einen gleichnamigen Ordner, sodass der Name doppelt im Pfad steht. Abhilfe:
+
+- beim Entpacken einen **kurzen Zielpfad** wählen, z. B. `C:\deka`
+- oder mit **7-Zip** entpacken, das die Grenze nicht kennt
+
 ### Größe des Repositorys
 
-Die entpackte Laufzeit macht das Repository groß: **rund 111 MB**, davon
-108 MB die Laufzeit und darin allein 89 MB `node.exe`. Der Download dauert entsprechend – dafür ist auf dem
+Die Laufzeit macht das Repository groß: **rund 92 MB**, davon allein 89 MB
+`node.exe`. Der Download dauert entsprechend – dafür ist auf dem
 Zielrechner kein einziger Installationsschritt nötig.
 
 Das ZIP-Archiv war zwischenzeitlich ebenfalls eingecheckt und wurde entfernt,
