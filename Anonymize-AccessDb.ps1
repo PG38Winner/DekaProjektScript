@@ -1,8 +1,8 @@
 <#
 .SYNOPSIS
     Liest eine Microsoft-Access-Datenbank (.accdb / .mdb) ODER eine Excel-Datei
-    (.xlsx / .xlsm / .xlsb / .xls) und anonymisiert ("verschleiert") ausgewaehlte
-    Spalten mit personenbezogenen Daten.
+    (.xlsx / .xlsm / .xlsb / .xls) und MASKIERT ausgewaehlte Spalten mit
+    personenbezogenen Daten (ersetzt die Werte durch erfundene Test-Werte).
 
 .DESCRIPTION
     Das Script oeffnet eine grafische Oberflaeche (WinForms):
@@ -38,6 +38,13 @@
 
 .NOTES
     Nur auf Kopien / mit Backup ausfuehren. Die Aenderungen sind endgueltig.
+
+    WICHTIG (Datenschutz): Dies ist eine MASKIERUNG / Testdaten-Ersetzung, KEINE
+    formal validierte Anonymisierung im Sinne der DSGVO. Es gibt keine
+    Re-Identifikations-Risikoanalyse und keine geprueften Verfahren. Der
+    Zufallsgenerator (System.Random) ist fuer Testdaten gedacht, nicht fuer
+    kryptografisch belastbare Pseudonymisierung. Erzeugte Sicherungs-/Original-
+    kopien enthalten weiterhin echte personenbezogene Daten.
 #>
 
 # ------------------------------------------------------------------------
@@ -145,10 +152,14 @@ function Get-FakeForString {
 function Get-ObfuscatedString {
     param([string]$OriginalValue, [string]$ColumnName, [int]$MaxLen = 0)
 
-    if (-not $script:ObfMap.ContainsKey($OriginalValue)) {
-        $script:ObfMap[$OriginalValue] = Get-FakeForString -OriginalValue $OriginalValue -ColumnName $ColumnName
+    # Schluessel = Spalte + Originalwert: gleicher Wert wird je Spalte konsistent
+    # ersetzt, ohne dass z. B. der Nachname "Berlin" und die Stadt "Berlin"
+    # denselben (fachlich falschen) Ersatz erhalten.
+    $key = "$ColumnName|$OriginalValue"
+    if (-not $script:ObfMap.ContainsKey($key)) {
+        $script:ObfMap[$key] = Get-FakeForString -OriginalValue $OriginalValue -ColumnName $ColumnName
     }
-    return (Limit-Length $script:ObfMap[$OriginalValue] $MaxLen)
+    return (Limit-Length $script:ObfMap[$key] $MaxLen)
 }
 
 # Liefert einen anonymisierten Wert anhand des .NET-Typs (fuer Excel-Zellen,
@@ -234,6 +245,13 @@ function Get-ObfuscatedValue {
 # ------------------------------------------------------------------------
 # Access-Verbindung / Provider ermitteln
 # ------------------------------------------------------------------------
+
+# Klammert einen Tabellen-/Spaltennamen sicher fuer Access-SQL ([ ] -> ]]).
+function Escape-AccessIdentifier {
+    param([string]$Name)
+    "[" + ($Name -replace "]", "]]") + "]"
+}
+
 function New-AccessConnection {
     param([string]$Path)
 
@@ -272,7 +290,7 @@ function Get-AccessColumns {
     param($Conn, [string]$Table)
     $cols = @()
     $rs = New-Object -ComObject ADODB.Recordset
-    $rs.Open("SELECT * FROM [$Table] WHERE 1=0", $Conn, 0, 1)   # ForwardOnly / ReadOnly
+    $rs.Open("SELECT * FROM $(Escape-AccessIdentifier $Table) WHERE 1=0", $Conn, 0, 1)   # ForwardOnly / ReadOnly
     foreach ($f in $rs.Fields) { $cols += $f.Name }
     $rs.Close()
     $cols
@@ -320,7 +338,7 @@ function Invoke-ObfuscationByCursor {
     $adOpenKeyset = 1; $adLockOptimistic = 3; $adUpdate = 0x01000000
     $rs = New-Object -ComObject ADODB.Recordset
     $rs.CursorLocation = 2   # adUseServer -> Update() schreibt sofort in die DB
-    $rs.Open("SELECT * FROM [$Table]", $Conn, $adOpenKeyset, $adLockOptimistic)
+    $rs.Open("SELECT * FROM $(Escape-AccessIdentifier $Table)", $Conn, $adOpenKeyset, $adLockOptimistic)
 
     if (-not $rs.Supports($adUpdate)) {
         $rs.Close()
@@ -348,7 +366,7 @@ function Invoke-ObfuscationByCursor {
 }
 
 # ------------------------------------------------------------------------
-# Kernfunktion: ausgewaehlte (nicht angekreuzte) Spalten verschleiern
+# Kernfunktion: ausgewaehlte (nicht angekreuzte) Spalten maskieren
 # ------------------------------------------------------------------------
 function Invoke-Obfuscation {
     param(
@@ -362,7 +380,7 @@ function Invoke-Obfuscation {
     try {
         # --- Feld-Metadaten ueber ein leeres Recordset ermitteln ---
         $rsMeta = New-Object -ComObject ADODB.Recordset
-        $rsMeta.Open("SELECT * FROM [$Table] WHERE 1=0", $conn, 0, 1)
+        $rsMeta.Open("SELECT * FROM $(Escape-AccessIdentifier $Table) WHERE 1=0", $conn, 0, 1)
         $meta = @{}
         foreach ($f in $rsMeta.Fields) {
             $meta[$f.Name] = @{
@@ -383,14 +401,27 @@ function Invoke-Obfuscation {
             if ($readonly.ContainsKey($c))       { & $Log "  '$c' uebersprungen (nicht aktualisierbar, z.B. Autowert/berechnet)."; continue }
             $targets += $c
         }
-        if ($targets.Count -eq 0) { & $Log "Keine beschreibbaren Spalten zum Anonymisieren."; return 0 }
+        if ($targets.Count -eq 0) { & $Log "Keine beschreibbaren Spalten zum Maskieren."; return 0 }
 
-        & $Log ("Anonymisiere Spalten: " + ($targets -join ', '))
+        & $Log ("Maskiere Spalten: " + ($targets -join ', '))
 
-        # Schreiben ueber einen editierbaren Server-Cursor (schreibt sofort in
-        # die Datei). Bewusst OHNE ADODB.Command/Parameter, um COM-Typkonflikte
-        # zu vermeiden.
-        return (Invoke-ObfuscationByCursor -Conn $conn -Table $Table -Targets $targets -Meta $meta -Log $Log)
+        # Transaktion (falls vom Provider unterstuetzt) -> bei Fehler Rollback,
+        # damit keine teilweise maskierte Tabelle zurueckbleibt.
+        $useTx = $false
+        try { [void]$conn.BeginTrans(); $useTx = $true; & $Log "Transaktion gestartet." }
+        catch { & $Log "Hinweis: Provider unterstuetzt keine Transaktion - es wird ohne Rollback gearbeitet." }
+
+        try {
+            # Schreiben ueber einen editierbaren Server-Cursor. Bewusst OHNE
+            # ADODB.Command/Parameter, um COM-Typkonflikte zu vermeiden.
+            $result = Invoke-ObfuscationByCursor -Conn $conn -Table $Table -Targets $targets -Meta $meta -Log $Log
+            if ($useTx) { [void]$conn.CommitTrans(); & $Log "Transaktion bestaetigt (Commit)." }
+            return $result
+        }
+        catch {
+            if ($useTx) { try { [void]$conn.RollbackTrans(); & $Log "Fehler - Aenderungen zurueckgerollt (Rollback)." } catch {} }
+            throw
+        }
     }
     finally {
         try { $conn.Close() } catch {}
@@ -412,12 +443,13 @@ function Get-FileKind {
     }
 }
 
-# Startet eine unsichtbare Excel-Instanz.
+# Startet eine SICHTBARE Excel-Instanz - das Verhalten ist damit fuer den
+# Benutzer nachvollziehbar (bewusst kein unsichtbarer Hintergrundprozess).
 function New-ExcelApp {
     $excel = New-Object -ComObject Excel.Application
-    $excel.Visible = $false
-    $excel.DisplayAlerts = $false
-    $excel
+    $excel.Visible = $true
+    $excel.DisplayAlerts = $true
+    return $excel
 }
 
 # Gibt COM-Objekte frei und beendet Excel sauber.
@@ -470,39 +502,46 @@ function Get-ExcelColumns {
 function Invoke-ObfuscationExcel {
     param([string]$Path, [string]$Sheet, $Columns, [scriptblock]$Log)
 
-    $excel = New-ExcelApp; $wb = $null
+    $excel = New-ExcelApp; $wb = $null; $ws = $null; $used = $null
     try {
         $wb = $excel.Workbooks.Open($Path)
         $ws = $wb.Worksheets.Item($Sheet)
         $used = $ws.UsedRange
         $firstRow  = [int]$used.Row
         $nRows     = [int]$used.Rows.Count
-        $headerRow = $firstRow
         $dataStart = $firstRow + 1
         $lastRow   = $firstRow + $nRows - 1
 
         if ($lastRow -lt $dataStart) { & $Log "Arbeitsblatt '$Sheet' hat keine Datenzeilen."; return 0 }
 
-        & $Log ("Anonymisiere Spalten: " + (($Columns | ForEach-Object { $_.Name }) -join ', '))
+        & $Log ("Maskiere Spalten: " + (($Columns | ForEach-Object { $_.Name }) -join ', '))
 
         foreach ($col in $Columns) {
             $absCol = [int]$col.AbsoluteColumn
             $rng = $ws.Range($ws.Cells.Item($dataStart, $absCol), $ws.Cells.Item($lastRow, $absCol))
-            # .Value (statt .Value2) liefert Datumszellen als [datetime] und nicht
-            # als serielle Zahl -> Datumsfelder werden korrekt als Datum behandelt.
-            $vals = $rng.Value
-
-            if ($vals -is [array]) {
-                # 2D-Array [1..n, 1..1]
-                for ($r = 1; $r -le $vals.GetLength(0); $r++) {
-                    $vals[$r,1] = Get-ObfuscatedValueGeneric -Value $vals[$r,1] -ColumnName $col.Name
+            try {
+                # Spalten mit Formeln nicht ueberschreiben (sonst gehen Formeln verloren)
+                if ($rng.HasFormula -ne $false) {
+                    & $Log "  Spalte '$($col.Name)' uebersprungen (enthaelt Formeln)."
+                    continue
                 }
-                $rng.Value = $vals
-            } else {
-                # Einzelne Datenzelle -> Skalar
-                $rng.Value = Get-ObfuscatedValueGeneric -Value $vals -ColumnName $col.Name
+                # .Value (statt .Value2) liefert Datumszellen als [datetime] und nicht
+                # als serielle Zahl -> Datumsfelder werden korrekt als Datum behandelt.
+                $vals = $rng.Value
+                if ($vals -is [array]) {
+                    # 2D-Array [1..n, 1..1]
+                    for ($r = 1; $r -le $vals.GetLength(0); $r++) {
+                        $vals[$r,1] = Get-ObfuscatedValueGeneric -Value $vals[$r,1] -ColumnName $col.Name
+                    }
+                    $rng.Value = $vals
+                } else {
+                    # Einzelne Datenzelle -> Skalar
+                    $rng.Value = Get-ObfuscatedValueGeneric -Value $vals -ColumnName $col.Name
+                }
+                & $Log "  Spalte '$($col.Name)' maskiert."
+            } finally {
+                if ($rng) { try { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($rng) } catch {} }
             }
-            & $Log "  Spalte '$($col.Name)' anonymisiert."
         }
 
         $wb.Save()
@@ -510,6 +549,8 @@ function Invoke-ObfuscationExcel {
         & $Log "$rows Datenzeile(n) verarbeitet."
         return $rows
     } finally {
+        if ($used) { try { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($used) } catch {} }
+        if ($ws)   { try { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($ws) } catch {} }
         Close-ExcelApp -Excel $excel -Workbook $wb
     }
 }
@@ -521,10 +562,10 @@ function Invoke-ObfuscationExcel {
 $script:ExcelCols = @()
 
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Access-/Excel-Daten anonymisieren / verschleiern"
-$form.Size = New-Object System.Drawing.Size(640, 620)
+$form.Text = "Access-/Excel-Daten maskieren (personenbezogene Werte ersetzen)"
+$form.Size = New-Object System.Drawing.Size(640, 660)
 $form.StartPosition = 'CenterScreen'
-$form.MinimumSize = New-Object System.Drawing.Size(560, 560)
+$form.MinimumSize = New-Object System.Drawing.Size(560, 600)
 
 # --- Datei-Auswahl ---
 $lblFile = New-Object System.Windows.Forms.Label
@@ -559,7 +600,7 @@ $form.Controls.Add($btnLoad)
 
 # --- Hinweis ---
 $lblHint = New-Object System.Windows.Forms.Label
-$lblHint.Text = "Angekreuzt = bleibt UNVERAENDERT   |   NICHT angekreuzt = wird anonymisiert"
+$lblHint.Text = "Angekreuzt = bleibt UNVERAENDERT   |   NICHT angekreuzt = wird maskiert"
 $lblHint.Location = '15,130'; $lblHint.AutoSize = $true
 $lblHint.Font = New-Object System.Drawing.Font($lblHint.Font, [System.Drawing.FontStyle]::Bold)
 $form.Controls.Add($lblHint)
@@ -582,16 +623,22 @@ $btnNone.Text = "Alle abwaehlen"; $btnNone.Location = '150,382'; $btnNone.Size =
 $btnNone.Anchor = 'Bottom,Left'
 $form.Controls.Add($btnNone)
 
-# --- Backup-Option ---
+# --- Optionen ---
+$chkWorkCopy = New-Object System.Windows.Forms.CheckBox
+$chkWorkCopy.Text = "Original nicht aendern (Ausgabe in Kopie)"
+$chkWorkCopy.Location = '15,414'; $chkWorkCopy.AutoSize = $true; $chkWorkCopy.Checked = $true
+$chkWorkCopy.Anchor = 'Bottom,Left'
+$form.Controls.Add($chkWorkCopy)
+
 $chkBackup = New-Object System.Windows.Forms.CheckBox
-$chkBackup.Text = "Vor Aenderung Backup-Kopie erstellen"
-$chkBackup.Location = '410,380'; $chkBackup.AutoSize = $true; $chkBackup.Checked = $true
+$chkBackup.Text = "Backup-Kopie erstellen (bei direkter Aenderung)"
+$chkBackup.Location = '320,414'; $chkBackup.AutoSize = $true; $chkBackup.Checked = $true
 $chkBackup.Anchor = 'Bottom,Right'
 $form.Controls.Add($chkBackup)
 
 # --- Start-Button ---
 $btnRun = New-Object System.Windows.Forms.Button
-$btnRun.Text = "Verschleiern starten"; $btnRun.Location = '15,415'; $btnRun.Size = '595,32'
+$btnRun.Text = "Maskierung starten"; $btnRun.Location = '15,446'; $btnRun.Size = '595,32'
 $btnRun.Anchor = 'Bottom,Left,Right'
 $btnRun.BackColor = [System.Drawing.Color]::FromArgb(220,53,69)
 $btnRun.ForeColor = [System.Drawing.Color]::White
@@ -600,7 +647,7 @@ $form.Controls.Add($btnRun)
 
 # --- Log ---
 $txtLog = New-Object System.Windows.Forms.TextBox
-$txtLog.Location = '15,455'; $txtLog.Size = '595,110'
+$txtLog.Location = '15,486'; $txtLog.Size = '595,110'
 $txtLog.Multiline = $true; $txtLog.ScrollBars = 'Vertical'; $txtLog.ReadOnly = $true
 $txtLog.Anchor = 'Bottom,Left,Right'
 $form.Controls.Add($txtLog)
@@ -668,7 +715,8 @@ $cmbTable.Add_SelectedIndexChanged({
     try {
         if ($kind -eq 'Excel') {
             $script:ExcelCols = @(Get-ExcelColumns -Path $path -Sheet $table)
-            foreach ($c in $script:ExcelCols) { [void]$clbColumns.Items.Add($c.Name, $false) }
+            # Anzeige mit Spaltennummer -> gleiche Kopfzeilen bleiben unterscheidbar
+            foreach ($c in $script:ExcelCols) { [void]$clbColumns.Items.Add(("{0}  (Spalte {1})" -f $c.Name, $c.AbsoluteColumn), $false) }
             & $Log "Arbeitsblatt '$table': $($script:ExcelCols.Count) Spalte(n) geladen."
         }
         elseif ($kind -eq 'Access') {
@@ -710,38 +758,63 @@ $btnRun.Add_Click({
     if ($uncheckedPos.Count -eq 0) { & $Log "Alle Spalten sind angekreuzt - es wird nichts veraendert."; return }
 
     $namesToObf = $uncheckedPos | ForEach-Object { [string]$clbColumns.Items[$_] }
-    $msg = "Folgende Spalten werden UNWIDERRUFLICH anonymisiert:`n`n" + ($namesToObf -join ", ") +
-           "`n`nTabelle/Blatt: $table`nFortfahren?"
+
+    # Schluessel-/Referenz-artige Spalten erkennen und davor warnen (Beziehungen
+    # koennten zerstoert werden). Autowert/RowID sind bereits geschuetzt.
+    $keyLike = @($namesToObf | Where-Object {
+        $_ -match '(?i)(^id$|_id|\bid\b|nummer|\bnr\b|isin|iban|kunde|vertrag|referenz|schluessel|\bkey\b|depot|konto)' })
+
+    $modeInfo = if ($chkWorkCopy.Checked) { "Es wird eine KOPIE maskiert, das Original bleibt unveraendert." }
+                else { "Die ausgewaehlte Datei wird DIREKT und UNWIDERRUFLICH veraendert." }
+    $keyWarn = if ($keyLike.Count -gt 0) { "`n`nACHTUNG: Diese Spalten sehen wie Schluessel/Referenzen aus und`nkoennten Beziehungen zerstoeren:`n" + ($keyLike -join ", ") } else { "" }
+    $msg = "Folgende Spalten werden maskiert:`n`n" + ($namesToObf -join ", ") +
+           "`n`nTabelle/Blatt: $table`n$modeInfo$keyWarn`n`nFortfahren?"
     if ([System.Windows.Forms.MessageBox]::Show($msg, "Bestaetigung", 'YesNo', 'Warning') -ne 'Yes') {
         & $Log "Abgebrochen."; return
     }
 
     try {
-        if ($chkBackup.Checked) {
+        $form.Cursor = 'WaitCursor'; $btnRun.Enabled = $false
+
+        # Zieldatei bestimmen: Arbeitskopie (Original bleibt unveraendert) ODER
+        # direkte Aenderung (optional mit Backup).
+        $targetPath = $path
+        if ($chkWorkCopy.Checked) {
+            $out = [System.IO.Path]::Combine(
+                        [System.IO.Path]::GetDirectoryName($path),
+                        [System.IO.Path]::GetFileNameWithoutExtension($path) +
+                        "_maskiert_" + (Get-Date -Format 'yyyyMMdd_HHmmss') +
+                        [System.IO.Path]::GetExtension($path))
+            if (Test-Path -LiteralPath $out) { throw "Zieldatei existiert bereits: $out" }
+            Copy-Item -LiteralPath $path -Destination $out
+            $targetPath = $out
+            & $Log "Arbeitskopie erstellt (Original bleibt unveraendert): $out"
+        }
+        elseif ($chkBackup.Checked) {
             $bak = [System.IO.Path]::Combine(
                         [System.IO.Path]::GetDirectoryName($path),
                         [System.IO.Path]::GetFileNameWithoutExtension($path) +
                         "_backup_" + (Get-Date -Format 'yyyyMMdd_HHmmss') +
                         [System.IO.Path]::GetExtension($path))
-            Copy-Item -LiteralPath $path -Destination $bak -Force
+            if (Test-Path -LiteralPath $bak) { throw "Backup-Datei existiert bereits: $bak" }
+            Copy-Item -LiteralPath $path -Destination $bak
             & $Log "Backup erstellt: $bak"
             & $Log "WARNUNG: Das Backup enthaelt weiterhin die ORIGINAL-Personendaten - bitte geschuetzt aufbewahren und nach Freigabe loeschen."
         }
 
-        $form.Cursor = 'WaitCursor'; $btnRun.Enabled = $false
-        & $Log "Starte Anonymisierung..."
+        & $Log "Starte Maskierung..."
 
         if ($kind -eq 'Excel') {
             # Positionen -> Excel-Spalten (Nummer + Name) ueber die gespeicherte Zuordnung
             $cols = $uncheckedPos | ForEach-Object { $script:ExcelCols[$_] }
-            $n = Invoke-ObfuscationExcel -Path $path -Sheet $table -Columns $cols -Log $Log
-            & $Log "Fertig. $n Datenzeile(n) verarbeitet."
-            [System.Windows.Forms.MessageBox]::Show("Anonymisierung abgeschlossen.`n$n Datenzeilen verarbeitet.", "Fertig", 'OK', 'Information') | Out-Null
+            $n = Invoke-ObfuscationExcel -Path $targetPath -Sheet $table -Columns $cols -Log $Log
+            & $Log "Fertig. $n Datenzeile(n) verarbeitet. Datei: $targetPath"
+            [System.Windows.Forms.MessageBox]::Show("Maskierung abgeschlossen.`n$n Datenzeilen verarbeitet.`n`nDatei: $targetPath", "Fertig", 'OK', 'Information') | Out-Null
         }
         else {
-            $n = Invoke-Obfuscation -Path $path -Table $table -ColumnsToObfuscate $namesToObf -Log $Log
-            & $Log "Fertig. $n Datensatz/-saetze aktualisiert."
-            [System.Windows.Forms.MessageBox]::Show("Anonymisierung abgeschlossen.`n$n Datensaetze aktualisiert.", "Fertig", 'OK', 'Information') | Out-Null
+            $n = Invoke-Obfuscation -Path $targetPath -Table $table -ColumnsToObfuscate $namesToObf -Log $Log
+            & $Log "Fertig. $n Datensatz/-saetze verarbeitet. Datei: $targetPath"
+            [System.Windows.Forms.MessageBox]::Show("Maskierung abgeschlossen.`n$n Datensaetze verarbeitet.`n`nDatei: $targetPath", "Fertig", 'OK', 'Information') | Out-Null
         }
     } catch {
         & $Log "FEHLER: $($_.Exception.Message)"

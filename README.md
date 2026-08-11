@@ -1,28 +1,45 @@
-# Access-/Excel-Daten Anonymisierer (`Anonymize-AccessDb.ps1`)
+# Access-/Excel-Daten Maskierung (`Anonymize-AccessDb.ps1`)
 
-PowerShell-Script mit grafischer Oberfläche zum **Verschleiern (Anonymisieren)
-personenbezogener Daten** in
+PowerShell-Script mit grafischer Oberfläche zum **Maskieren personenbezogener
+Daten** (Ersetzen durch erfundene Test-Werte) in
 
 - **Microsoft-Access-Datenbanken** (`.accdb` / `.mdb`) und
 - **Excel-Dateien** (`.xlsx` / `.xlsm` / `.xlsb` / `.xls`).
 
 Der Dateityp wird automatisch an der Endung erkannt.
 
+> **Hinweis (Datenschutz):** Dies ist eine **Maskierung / Testdaten-Ersetzung**,
+> **keine** formal validierte Anonymisierung im Sinne der DSGVO (keine
+> Re-Identifikations-Risikoanalyse, kein geprüftes Verfahren, nicht-kryptografischer
+> Zufall). Für Testdaten geeignet – nicht als regulatorisch belastbare
+> Anonymisierung/Pseudonymisierung.
+
 ## Funktionsweise
 
 1. Access- **oder** Excel-Datei über den Datei-Dialog auswählen und **Laden** klicken.
 2. **Tabelle** (Access) bzw. **Arbeitsblatt** (Excel) aus dem Dropdown wählen –
    die Spalten erscheinen als Checkbox-Liste. Bei Excel ist die **erste Zeile**
-   die Kopfzeile mit den Spaltennamen.
+   die Kopfzeile mit den Spaltennamen (mit Spaltennummer, damit gleiche
+   Überschriften unterscheidbar bleiben).
 3. Spalten **ankreuzen**, die **unverändert** bleiben sollen
-   (z. B. Primärschlüssel, IDs, Referenzen).
-4. **Nicht angekreuzte** Spalten werden **anonymisiert**.
-5. **Verschleiern starten** klicken.
+   (z. B. Primärschlüssel, IDs, Referenzen, Join-Spalten).
+4. **Nicht angekreuzte** Spalten werden **maskiert**.
+5. Optionen wählen (siehe unten) und **Maskierung starten** klicken.
 
 > **Merksatz:**
-> **Angekreuzt = bleibt unverändert** · **Nicht angekreuzt = wird verschleiert**
+> **Angekreuzt = bleibt unverändert** · **Nicht angekreuzt = wird maskiert**
 
-## Art der Anonymisierung
+## Optionen: Arbeitskopie vs. direkte Änderung
+
+- **Original nicht ändern (Ausgabe in Kopie)** – *Standard, empfohlen.* Es wird
+  eine Kopie `…_maskiert_<Zeitstempel>.<ext>` erzeugt und **nur diese** verändert;
+  das Original bleibt unangetastet (kein Risiko einer teilweise veränderten
+  Originaldatei).
+- Ist diese Option **aus**, wird die Datei **direkt** verändert – dann optional
+  mit **Backup-Kopie** des Originals. Bei Access läuft die direkte Änderung in
+  einer **Transaktion** (Rollback bei Fehler, sofern der Provider das unterstützt).
+
+## Art der Maskierung
 
 Die Ersetzung erfolgt typ- und inhaltsabhängig:
 
@@ -40,10 +57,15 @@ Die Ersetzung erfolgt typ- und inhaltsabhängig:
 `NULL`- und Leerwerte bleiben erhalten. Bei Access werden Autowert-/RowID-Spalten
 und nicht beschreibbare Felder automatisch übersprungen.
 
-**Konsistente Ersetzung:** Gleiche Originalwerte werden innerhalb einer Sitzung
-**immer gleich** ersetzt (z. B. „Max Müller" → immer derselbe Fake-Name, über
-Zeilen, Tabellen und Arbeitsblätter hinweg). So bleiben referentielle
-Zusammenhänge erhalten.
+**Konsistente Ersetzung (pro Spalte):** Gleiche Originalwerte innerhalb
+**derselben Spalte** werden immer gleich ersetzt (z. B. „Max Müller" → immer
+derselbe Fake-Name). Der Schlüssel ist `Spalte|Originalwert`, damit derselbe
+Wert in unterschiedlichen Spalten (z. B. Nachname „Berlin" vs. Stadt „Berlin")
+nicht denselben, fachlich falschen Ersatz erhält.
+
+**Excel-Besonderheiten:** Spalten mit **Formeln** werden übersprungen (Formeln
+bleiben erhalten). Excel wird **sichtbar** gestartet, damit das Verhalten
+nachvollziehbar ist.
 
 ## Zwei Engines
 
