@@ -94,6 +94,19 @@ transparente Umgang damit:
 3. **Fehlalarm an den Hersteller melden** (z. B. Microsoft Defender:
    „Submit a file for analysis"), damit die Erkennung generell korrigiert wird.
 
+## Mitgelieferte Node.js-Laufzeit
+
+Im Repository liegt die offizielle, portable Node.js-Laufzeit für Windows:
+
+- Datei: `node-v24.19.0-win-x64.zip` (ca. 36 MB)
+- Version: **v24.19.0** (LTS „Krypton")
+- Quelle: <https://nodejs.org/dist/v24.19.0/node-v24.19.0-win-x64.zip>
+- SHA-256: `57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73`
+  (geprüft gegen die offizielle `SHASUMS256.txt`)
+
+Zum Verwenden das ZIP entpacken – `node.exe` und `npm.cmd` liegen darin
+direkt im Ordner `node-v24.19.0-win-x64\` und laufen ohne Installation.
+
 ## Hinweise
 
 - Die Änderungen sind **endgültig**. Vor der Ausführung wird standardmäßig eine
