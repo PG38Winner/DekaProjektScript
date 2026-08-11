@@ -253,12 +253,21 @@ Zielrechner kein einziger Installationsschritt nötig.
 
 Das ZIP-Archiv war zwischenzeitlich ebenfalls eingecheckt und wurde entfernt,
 da es neben dem entpackten Ordner keinen Zweck mehr erfüllte. Es steckt
-weiterhin in der Git-Historie – ein `git clone` überträgt es also mit. Wer nur
-den aktuellen Stand braucht, spart das mit einem flachen Klon:
+weiterhin in der Git-Historie – ein vollständiger `git clone` überträgt es also
+mit. Wer nur den aktuellen Stand braucht, spart das:
+
+| Bezugsweg | Gesamt | davon `.git` |
+|-----------|--------|--------------|
+| *Code → Download ZIP* auf GitHub | nur Inhalt, keine Historie | – |
+| `git clone --depth 1` | 149 MB | 38 MB |
+| `git clone` (vollständig) | 183 MB | 73 MB |
 
 ```bash
 git clone --depth 1 https://github.com/PG38Winner/DekaProjektScript.git
 ```
+
+Für den Zielrechner ist der ZIP-Download der einfachste Weg – er enthält keine
+Historie und setzt kein Git voraus.
 
 > Die Windows-Startskripte (`anonymisieren.cmd`, `node-umgebung.cmd`) sind unter
 > Windows **nicht** erprobt – diese Entwicklungsumgebung ist Linux. Getestet
