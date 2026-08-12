@@ -134,43 +134,70 @@ als solche ausgewiesen; der Lauf bricht deswegen nicht ab.
 
 ### `--keep` je Arbeitsblatt
 
-`--keep` kennt zwei Schreibweisen, die sich beliebig kombinieren lassen:
+Ohne Blattnamen gilt eine Angabe in **jedem** Arbeitsblatt:
 
 ```bash
-# Gilt in JEDEM Arbeitsblatt
 --keep "KundenID"
-
-# Gilt nur im Blatt "Kunden"
---keep "Kunden:KundenID"
 ```
 
-Mehrfach angebbar – so lassen sich **beliebig viele** Blätter versorgen:
+Mit vorangestelltem Blattnamen gilt sie nur dort – und das Präfix bleibt für
+alle **folgenden** Spalten derselben Angabe wirksam. So lassen sich je Tabelle
+beliebig viele Spalten nennen:
+
+```bash
+# Drei Spalten, alle nur im Blatt "Kunden"
+--keep "Kunden:KundenID,Nachname,Ort"
+```
+
+Ein neues Präfix wechselt das Blatt – beliebig oft, für beliebig viele
+Tabellen in einer einzigen Angabe:
+
+```bash
+--keep "Kunden:KundenID,Nachname,Artikel:ArtikelNr,Preis,Rechnungen:RechnungsNr"
+```
+
+Gleichwertig und oft übersichtlicher, mehrfach angegeben:
 
 ```bash
 node src/cli.js daten.xlsx \
-  --keep "Kunden:KundenID" \
-  --keep "Bestellungen:BestellID,Bestellungen:KundenID" \
-  --keep "Artikel:ArtikelNr" \
-  --keep "Rechnungen:RechnungsNr"
+  --keep "Kunden:KundenID,Nachname,Ort" \
+  --keep "Bestellungen:BestellID,Betrag" \
+  --keep "Artikel:ArtikelNr,Preis"
 ```
 
-Gleichwertig in einer einzigen Angabe:
+Jede `--keep`-Angabe beginnt wieder bei „gilt überall"; ein Präfix wirkt also
+nie über die Angabe hinaus, in der es steht. Innerhalb einer Angabe schaltet
+`*:` ausdrücklich zurück auf alle Blätter:
 
 ```bash
---keep "Kunden:KundenID,Bestellungen:BestellID,Artikel:ArtikelNr"
+--keep "Kunden:Nachname,*:KundenID"   # Nachname nur in Kunden, KundenID überall
 ```
 
-Der Doppelpunkt eignet sich als Trenner, weil Excel ihn in Blattnamen nicht
-zulässt. Getrennt wird am **ersten** Doppelpunkt, ein Spaltenname darf also
-selbst welche enthalten. Enthält ein Spaltenname ein Komma, wird es mit `\,`
-maskiert – oder man gibt `--keep` einfach mehrfach an.
+#### Feinheiten
 
-Groß-/Kleinschreibung spielt weder bei Blatt- noch bei Spaltennamen eine Rolle.
-Ein Tippfehler bricht den Lauf ab, statt wirkungslos zu bleiben:
+- **Groß-/Kleinschreibung** spielt weder bei Blatt- noch bei Spaltennamen eine
+  Rolle.
+- Der **Doppelpunkt** eignet sich als Trenner, weil Excel ihn in Blattnamen
+  nicht zulässt. Getrennt wird am **ersten** Doppelpunkt, ein Spaltenname darf
+  also selbst welche enthalten.
+- Enthält ein Spaltenname ein **Komma**, wird es als `\,` maskiert – oder man
+  gibt `--keep` einfach mehrfach an.
+- Ein **Tippfehler** bricht den Lauf ab, statt wirkungslos zu bleiben:
 
 ```
 Fehlerhafte --keep-Angabe:
   Spalte "kundeid" gibt es im Blatt "Kunden" nicht. Vorhanden: KundenID, Vorname, ...
+  Arbeitsblatt "Kundne" wird nicht verarbeitet. Verarbeitet werden: Kunden, Bestellungen
+```
+
+Was tatsächlich stehen bleibt, zeigt `--dry-run` vor dem echten Lauf:
+
+```
+Arbeitsblatt: Kunden
+  KundenID     unveraendert     integer
+  Vorname      anonymisiert     firstName   5 Zellen
+  Nachname     unveraendert     lastName
+  Ort          unveraendert     city
 ```
 
 ## Art der Anonymisierung
@@ -249,7 +276,7 @@ Makros verloren – auch darauf wird hingewiesen.
 npm test
 ```
 
-53 Tests zu Typerkennung, Werterhaltung, Dateibehandlung, Makro-Erhalt und
+60 Tests zu Typerkennung, Werterhaltung, Dateibehandlung, Makro-Erhalt und
 Gleichlauf von Bündel und Quellcode. Die Bündel-Tests werden übersprungen,
 solange `dist/` nicht gebaut ist.
 

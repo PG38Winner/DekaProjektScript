@@ -9,7 +9,6 @@
 
 import { parseArgs } from 'node:util';
 import { anonymizeWorkbook, inspectWorkbook } from './anonymize.js';
-import { splitList } from './keep.js';
 
 const USAGE = `
 Excel-Anonymisierer - verschleiert personenbezogene Daten in .xlsx/.xlsm
@@ -20,13 +19,17 @@ Aufruf:
 Optionen:
   --list                Blaetter und Spalten anzeigen (nichts veraendern)
   --sheet <name>        Nur dieses Arbeitsblatt; Standard: ALLE Blaetter
-  --keep <angabe>       Spalten, die UNVERAENDERT bleiben. Zwei Schreibweisen:
-                          --keep "KundenID"           gilt in JEDEM Blatt
-                          --keep "Kunden:KundenID"    gilt nur im Blatt Kunden
-                        Mehrfach angebbar und kombinierbar, fuer beliebig
-                        viele Blaetter:
-                          --keep "Kunden:ID" --keep "Bestellungen:Nr"
-                          --keep "Kunden:ID,Bestellungen:Nr"
+  --keep <angabe>       Spalten, die UNVERAENDERT bleiben.
+                          --keep "KundenID"          gilt in JEDEM Blatt
+                          --keep "Kunden:KundenID"   nur im Blatt Kunden
+                        Ein Blatt-Praefix gilt fuer alle folgenden Spalten der
+                        Angabe, bis ein neues Praefix kommt - so lassen sich je
+                        Blatt beliebig viele Spalten nennen:
+                          --keep "Kunden:ID,Name,Ort"
+                          --keep "Kunden:ID,Name,Artikel:Nr,Preis"
+                          --keep "*:ID"              wieder fuer jedes Blatt
+                        Mehrfach angebbar; jede Angabe beginnt neu:
+                          --keep "Kunden:ID,Name" --keep "Artikel:Nr"
   --out <datei>         Ergebnis in neue Datei schreiben statt zu ueberschreiben
   --no-backup           Keine Sicherungskopie anlegen
   --no-consistent       Gleiche Werte muessen nicht denselben Ersatz erhalten
@@ -40,7 +43,7 @@ Merksatz:
 
 Beispiele:
   anonymize-xlsx daten.xlsx --list
-  anonymize-xlsx daten.xlsx --keep "Kunden:KundenID" --keep "Bestellungen:BestellID"
+  anonymize-xlsx daten.xlsx --keep "Kunden:KundenID,Nachname" --keep "Artikel:Nr"
   anonymize-xlsx daten.xlsx --sheet Kunden --out anonym.xlsx --dry-run
 `.trim();
 
@@ -84,8 +87,9 @@ async function main() {
   }
 
   const seed = parseSeed(values.seed);
-  // --keep darf mehrfach auftreten und je Angabe eine Kommaliste enthalten.
-  const keep = (values.keep ?? []).flatMap(splitList);
+  // Roh weiterreichen: das Zerlegen bleibt in keep.js, weil ein Blatt-Praefix
+  // innerhalb einer Angabe fuer die folgenden Spalten weitergilt.
+  const keep = values.keep ?? [];
 
   const report = await anonymizeWorkbook({
     file,

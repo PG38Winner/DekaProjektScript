@@ -1,20 +1,31 @@
 /**
  * Zerlegt die --keep-Angaben.
  *
- * Zwei Schreibweisen, beliebig kombinierbar und fuer beliebig viele Blaetter:
+ * Ein Blattname vor dem Doppelpunkt legt fest, fuer welches Arbeitsblatt die
+ * folgenden Spalten gelten - und zwar so lange, bis ein neues Praefix kommt.
+ * Damit lassen sich je Blatt beliebig viele Spalten in einer Angabe nennen:
  *
- *   --keep "KundenID"                    gilt in JEDEM Arbeitsblatt
- *   --keep "Kunden:KundenID"             gilt nur im Blatt "Kunden"
- *   --keep "Kunden:ID,Bestellungen:Nr"   je Blatt eigene Spalten
+ *   --keep "KundenID"                          gilt in JEDEM Blatt
+ *   --keep "Kunden:ID,Name,Ort"                drei Spalten nur im Blatt Kunden
+ *   --keep "Kunden:ID,Name,Artikel:Nr,Preis"   wechselt beim naechsten Praefix
+ *   --keep "ID,Kunden:Name"                    ID ueberall, Name nur in Kunden
+ *   --keep "Kunden:Name,*:ID"                  "*" schaltet zurueck auf ueberall
+ *
+ * Jede einzelne --keep-Angabe beginnt wieder bei "gilt ueberall"; ein Praefix
+ * wirkt also nie ueber die Angabe hinaus, in der es steht.
  *
  * Der Doppelpunkt eignet sich als Trenner, weil Excel ihn in Blattnamen nicht
  * zulaesst. Spaltennamen duerfen ihn enthalten - getrennt wird am ersten.
  */
 
+/** Praefix, das ausdruecklich wieder alle Blaetter meint. */
+const ALL_SHEETS = '*';
+
 /** @typedef {{global: Set<string>, perSheet: Map<string, Set<string>>, raw: string[]}} KeepRules */
 
 /**
- * @param {string[]} entries Rohe Angaben, z. B. ["Kunden:ID", "Ort"].
+ * @param {string[]} entries Rohe Angaben - je Element eine --keep-Angabe,
+ *                           die ihrerseits eine Kommaliste sein darf.
  * @returns {KeepRules}
  */
 export function parseKeep(entries) {
@@ -25,30 +36,49 @@ export function parseKeep(entries) {
     if (!text) continue;
     rules.raw.push(text);
 
-    const separator = text.indexOf(':');
-    if (separator === -1) {
-      rules.global.add(normalize(text));
-      continue;
-    }
+    // Gilt nur innerhalb dieser Angabe; null bedeutet "alle Blaetter".
+    let currentSheet = null;
 
-    const sheet = normalize(text.slice(0, separator));
-    const column = normalize(text.slice(separator + 1));
-    if (!sheet || !column) {
-      throw new Error(
-        `Ungueltige --keep-Angabe: "${text}"\n` +
-        'Erwartet wird "Spalte" oder "Blattname:Spalte".',
-      );
-    }
+    for (const part of splitList(text)) {
+      const separator = part.indexOf(':');
 
-    let columns = rules.perSheet.get(sheet);
-    if (!columns) {
-      columns = new Set();
-      rules.perSheet.set(sheet, columns);
+      if (separator === -1) {
+        addColumn(rules, currentSheet, part, text);
+        continue;
+      }
+
+      const prefix = part.slice(0, separator).trim();
+      const column = part.slice(separator + 1).trim();
+      if (!prefix || !column) {
+        throw new Error(
+          `Ungueltige --keep-Angabe: "${part}"\n` +
+          'Erwartet wird "Spalte", "Blattname:Spalte" oder "*:Spalte".',
+        );
+      }
+
+      currentSheet = prefix === ALL_SHEETS ? null : normalize(prefix);
+      addColumn(rules, currentSheet, column, text);
     }
-    columns.add(column);
   }
 
   return rules;
+}
+
+function addColumn(rules, sheet, column, context) {
+  const name = normalize(column);
+  if (!name) throw new Error(`Ungueltige --keep-Angabe: "${context}" enthaelt einen leeren Namen.`);
+
+  if (sheet === null) {
+    rules.global.add(name);
+    return;
+  }
+
+  let columns = rules.perSheet.get(sheet);
+  if (!columns) {
+    columns = new Set();
+    rules.perSheet.set(sheet, columns);
+  }
+  columns.add(name);
 }
 
 /** Zerlegt eine Kommaliste; erlaubt maskierte Kommas mit \, im Spaltennamen. */
