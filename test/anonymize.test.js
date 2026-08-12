@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
 
-import { anonymizeWorkbook, inspectWorkbook } from '../src/anonymize.js';
+import { anonymizeWorkbook, inspectWorkbook } from '../src/excel/anonymize.js';
 import { createFixture, createMacroFixture, readSheet, ROWS } from './fixture.js';
 
 let workdir;

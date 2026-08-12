@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { anonymizeWorkbook } from '../src/anonymize.js';
+import { anonymizeWorkbook } from '../src/excel/anonymize.js';
 import {
   createMacroFixture, readMacroState, readSheet, ROWS,
   VBA_CONTENT, VBA_SIGNATURE_CONTENT, WORKBOOK_CODE_NAME, SHEET_CODE_NAME,

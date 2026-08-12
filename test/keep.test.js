@@ -4,8 +4,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { anonymizeWorkbook } from '../src/anonymize.js';
-import { parseKeep, isKept, splitList } from '../src/keep.js';
+import { anonymizeWorkbook } from '../src/excel/anonymize.js';
+import { parseKeep, isKept, splitList } from '../src/core/keep.js';
 import { createFixture, readSheet, ROWS } from './fixture.js';
 
 let workdir;

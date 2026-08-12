@@ -8,11 +8,11 @@ import { access, constants, copyFile } from 'node:fs/promises';
 import path from 'node:path';
 import ExcelJS from 'exceljs';
 
-import { KINDS } from './classify.js';
-import { createGenerator } from './generators.js';
+import { KINDS } from '../core/classify.js';
+import { createGenerator } from '../core/generators.js';
 import { readMacroParts, restoreMacroParts } from './macros.js';
 import { readColumns } from './inspect.js';
-import { parseKeep, isKept, validateKeep } from './keep.js';
+import { parseKeep, isKept, validateKeep } from '../core/keep.js';
 import { toPlainValue, isReadOnlyValue } from './cells.js';
 
 // `--list` kommt ohne vollstaendiges Einlesen der Datei aus und liegt deshalb

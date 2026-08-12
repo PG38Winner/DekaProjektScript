@@ -8,20 +8,43 @@
  */
 
 import { parseArgs } from 'node:util';
-import { anonymizeWorkbook, inspectWorkbook } from './anonymize.js';
+import path from 'node:path';
+
+import { anonymizeWorkbook, inspectWorkbook } from './excel/anonymize.js';
+import { anonymizeDatabase, inspectDatabase } from './access/anonymize.js';
+
+/** Waehlt die Engine anhand der Dateiendung. */
+const ENGINES = {
+  '.xlsx': 'excel', '.xlsm': 'excel',
+  '.accdb': 'access', '.mdb': 'access',
+};
+
+function engineFor(file) {
+  const extension = path.extname(file).toLowerCase();
+  const engine = ENGINES[extension];
+  if (engine) return engine;
+
+  throw new Error(
+    `Nicht unterstuetzte Dateiendung "${extension || '(keine)'}".\n` +
+    'Unterstuetzt werden: .xlsx, .xlsm (Excel) sowie .accdb, .mdb (Access).',
+  );
+}
 
 const USAGE = `
-Excel-Anonymisierer - verschleiert personenbezogene Daten in .xlsx/.xlsm
+Daten-Anonymisierer - verschleiert personenbezogene Daten
+in Excel-Dateien (.xlsx/.xlsm) und Access-Datenbanken (.accdb/.mdb).
+Die Engine wird an der Dateiendung erkannt.
 
 Aufruf:
-  anonymize-xlsx <datei> [optionen]
+  anonymisieren <datei> [optionen]
 
 Optionen:
-  --list                Blaetter und Spalten anzeigen (nichts veraendern)
-  --sheet <name>        Nur dieses Arbeitsblatt; Standard: ALLE Blaetter
+  --list                Blaetter/Tabellen und Spalten anzeigen (nichts aendern)
+  --sheet <name>        Nur dieses Blatt bzw. diese Tabelle (auch: --table);
+                        Standard: ALLE
   --keep <angabe>       Spalten, die UNVERAENDERT bleiben.
                           --keep "KundenID"          gilt in JEDEM Blatt
-                          --keep "Kunden:KundenID"   nur im Blatt Kunden
+                          --keep "Kunden:KundenID"   nur in Kunden
                         Ein Blatt-Praefix gilt fuer alle folgenden Spalten der
                         Angabe, bis ein neues Praefix kommt - so lassen sich je
                         Blatt beliebig viele Spalten nennen:
@@ -35,21 +58,30 @@ Optionen:
   --no-consistent       Gleiche Werte muessen nicht denselben Ersatz erhalten
   --seed <zahl>         Fester Startwert - erzeugt reproduzierbare Ergebnisse
   --dry-run             Nur anzeigen, was passieren wuerde
-  --fast                --list beschleunigen (liest die Datei nur teilweise)
+  --fast                --list beschleunigen (nur Excel; liest teilweise)
+  --password <wort>     Kennwort der Access-Datenbank
   -h, --help            Diese Hilfe
+
+Access:
+  Lesen, --list und --dry-run laufen auf jedem System. Das Schreiben braucht
+  Windows mit der Microsoft Access Database Engine (ACE-OLEDB).
+  Schluesselspalten werden erkannt und bleiben immer unveraendert.
 
 Merksatz:
   In --keep genannt = bleibt unveraendert - alle anderen Spalten werden verschleiert.
 
 Beispiele:
-  anonymize-xlsx daten.xlsx --list
-  anonymize-xlsx daten.xlsx --keep "Kunden:KundenID,Nachname" --keep "Artikel:Nr"
-  anonymize-xlsx daten.xlsx --sheet Kunden --out anonym.xlsx --dry-run
+  anonymisieren daten.xlsx --list
+  anonymisieren daten.xlsx --keep "Kunden:KundenID,Nachname" --keep "Artikel:Nr"
+  anonymisieren daten.accdb --dry-run
+  anonymisieren daten.accdb --keep "Kunden:KundenID" --out anonym.accdb
 `.trim();
 
 const OPTIONS = {
   list: { type: 'boolean', default: false },
   sheet: { type: 'string' },
+  table: { type: 'string' },
+  password: { type: 'string' },
   keep: { type: 'string', multiple: true },
   out: { type: 'string' },
   backup: { type: 'boolean', default: true },
@@ -80,9 +112,11 @@ async function main() {
   }
 
   const file = positionals[0];
+  const engine = engineFor(file);
+  const section = values.sheet ?? values.table;
 
   if (values.list) {
-    await printStructure(file, values.fast);
+    await printStructure(engine, file, values);
     return;
   }
 
@@ -91,43 +125,53 @@ async function main() {
   // innerhalb einer Angabe fuer die folgenden Spalten weitergilt.
   const keep = values.keep ?? [];
 
-  const report = await anonymizeWorkbook({
+  const common = {
     file,
-    sheet: values.sheet,
     keep,
     out: values.out,
     backup: values.backup,
     dryRun: values['dry-run'],
     consistent: values.consistent,
     seed,
-  });
+  };
+
+  const report = engine === 'access'
+    ? await anonymizeDatabase({ ...common, table: section, password: values.password })
+    : await anonymizeWorkbook({ ...common, sheet: section });
 
   printReport(report, values['dry-run']);
 }
 
-async function printStructure(file, fast) {
-  const sheets = await inspectWorkbook(file, { fast });
+async function printStructure(engine, file, values) {
+  const sheets = engine === 'access'
+    ? await inspectDatabase(file, { password: values.password })
+    : await inspectWorkbook(file, { fast: values.fast });
+
+  const label = engine === 'access' ? 'Tabelle' : 'Arbeitsblatt';
 
   for (const sheet of sheets) {
     // Die Zeilenzahl stammt aus dem Kopf des Blattes; fehlt sie dort, wird sie
     // nicht eigens ermittelt - das wuerde die Datei komplett einlesen.
     const rows = sheet.rowCount === null ? 'Zeilenzahl unbekannt' : `${sheet.rowCount} Datenzeilen`;
-    console.log(`\nArbeitsblatt: ${sheet.name}  (${rows})`);
+    console.log(`\n${label}: ${sheet.name}  (${rows})`);
     if (!sheet.columns.length) {
-      console.log('  (keine Kopfzeile mit Spaltennamen gefunden)');
+      console.log('  (keine Spalten gefunden)');
       continue;
     }
     for (const column of sheet.columns) {
-      const kind = column.readOnly ? 'Formel - wird uebersprungen' : column.kind;
-      console.log(`  ${column.header.padEnd(28)} ${kind}`);
+      const kind = column.readOnly ? 'wird uebersprungen' : column.kind;
+      const note = column.note ? `  [${column.note}]` : '';
+      console.log(`  ${column.header.padEnd(28)} ${kind}${note}`);
     }
   }
   console.log('');
 }
 
 function printReport(report, dryRun) {
+  const label = report.label ?? 'Arbeitsblatt';
+
   for (const sheet of report.sheets) {
-    console.log(`\nArbeitsblatt: ${sheet.name}  (${sheet.rows} Datenzeilen)`);
+    console.log(`\n${label}: ${sheet.name}  (${sheet.rows} Datenzeilen)`);
 
     if (sheet.skipped) {
       console.log(`  uebersprungen - ${sheet.skipped}`);

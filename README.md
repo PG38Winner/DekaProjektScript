@@ -1,18 +1,17 @@
-# Excel-Daten Anonymisierer
+# Daten-Anonymisierer
 
 Kommandozeilen-Werkzeug zum **Verschleiern (Anonymisieren) personenbezogener
-Daten** in Excel-Dateien (`.xlsx` / `.xlsm`).
+Daten** in
 
-Es arbeitet direkt auf der Datei – **ein installiertes Microsoft Excel wird
-nicht benötigt**. Dadurch läuft es unter Windows, Linux und macOS, auf Servern
-und in CI-Pipelines.
+- **Excel-Dateien** (`.xlsx` / `.xlsm`) und
+- **Access-Datenbanken** (`.accdb` / `.mdb`).
 
-> **Hinweis zur Projektgeschichte:** Frühere Stände enthielten zusätzlich das
-> PowerShell-Skript `Anonymize-AccessDb.ps1` mit grafischer Oberfläche und
-> Access-Unterstützung. Es wurde in Commit `84e2f66` entfernt. **Access
-> (`.accdb`/`.mdb`) wird derzeit nicht unterstützt** – dafür wäre weiterhin der
-> ACE-OLEDB-Provider nötig. Über `git show 84e2f66^:Anonymize-AccessDb.ps1`
-> lässt sich die alte Fassung bei Bedarf wieder herausholen.
+Die Engine wird an der Dateiendung erkannt.
+
+Für Excel wird **kein installiertes Microsoft Excel** benötigt – gearbeitet
+wird direkt auf der Datei. Access wird ebenfalls ohne Zusatzsoftware
+**gelesen**; zum **Schreiben** ist Windows mit der Microsoft Access Database
+Engine nötig (siehe [Access](#access-datenbanken-accdb--mdb)).
 
 ## Einrichten
 
@@ -87,7 +86,9 @@ node src/cli.js daten.xlsx --sheet Kunden --out anonym.xlsx --seed 42
 | `--no-consistent` | Gleiche Werte dürfen unterschiedliche Ersatzwerte erhalten |
 | `--seed <zahl>` | Fester Startwert für reproduzierbare Läufe |
 | `--dry-run` | Nur anzeigen, was passieren würde |
-| `--fast` | `--list` beschleunigen (liest die Datei nur teilweise) |
+| `--table <name>` | wie `--sheet`, für Access-Tabellen |
+| `--password <wort>` | Kennwort der Access-Datenbank |
+| `--fast` | `--list` beschleunigen (nur Excel; liest die Datei teilweise) |
 | `-h`, `--help` | Hilfe anzeigen |
 
 > **Merksatz:**
@@ -240,6 +241,84 @@ Mit `--no-consistent` erhält jede Zelle einen eigenen Zufallswert.
 Mit `--seed <zahl>` wird derselbe Lauf reproduzierbar – nützlich für Tests.
 Ohne Seed ist jeder Lauf anders.
 
+## Access-Datenbanken (`.accdb` / `.mdb`)
+
+```bash
+node src/cli.js daten.accdb --list
+node src/cli.js daten.accdb --dry-run
+node src/cli.js daten.accdb --keep "Kunden:Kundennummer" --out anonym.accdb
+```
+
+### Was wo läuft
+
+| Schritt | Voraussetzung |
+|---------|---------------|
+| Lesen, `--list`, `--dry-run` | keine – läuft unter Windows, Linux und macOS |
+| Schreiben | **Windows** mit **Microsoft Access Database Engine** (ACE-OLEDB) |
+
+Gelesen wird mit `mdb-reader`, reinem JavaScript. Geschrieben wird über
+PowerShell und ADODB/ACE-OLEDB – das ist der einzige Weg, in eine `.accdb` zu
+schreiben. Das dafür nötige Skript wird über die Standardeingabe an
+`powershell -Command -` übergeben, ist also **kein** Skriptaufruf: die
+Ausführungsrichtlinie greift nicht, `Bypass` ist nicht nötig.
+
+Läuft der Befehl ohne Windows, bricht er mit einer klaren Meldung ab, statt
+etwas halb zu erledigen.
+
+### Schlüssel und Verknüpfungen bleiben stehen
+
+Access ist kein Tabellenblatt: Datensätze hängen über Schlüssel zusammen.
+Das Werkzeug schützt diese Struktur von sich aus.
+
+- Als **Schlüsselspalte** wird der Autowert genommen; gibt es keinen, eine
+  Spalte, deren Werte in den gelesenen Daten **nachweislich eindeutig und
+  lückenlos** sind. Über sie wird später jeder Datensatz angesteuert.
+- Die Schlüsselspalte bleibt **immer unverändert** – sonst wären die Datensätze
+  nach dem ersten Schreibvorgang nicht mehr auffindbar.
+- Eine Spalte, die in einer **anderen** Tabelle Schlüssel ist, bleibt ebenfalls
+  stehen. Steht `KundenID` in *Kunden* als Schlüssel und in *Bestellungen* als
+  Verweis, würden ersetzte Werte dort ins Leere zeigen.
+- **Autowert-Felder** und Typen, die sich nicht sinnvoll ersetzen lassen
+  (Anlagen, OLE-Objekte, Binärdaten, GUIDs), werden übersprungen.
+- Findet sich in einer Tabelle **keine** eindeutige Spalte, bleibt sie
+  unangetastet und wird gemeldet – ein Datensatz, den man nicht sicher
+  ansteuern kann, wird nicht angefasst.
+
+Im Bericht ist jede dieser Entscheidungen sichtbar:
+
+```
+Tabelle: Bestellungen  (3 Datenzeilen)
+  BestellNr    uebersprungen (Autowert)
+  KundenID     unveraendert (Verknuepfung)
+  Betrag       anonymisiert              3 Zellen
+```
+
+### Sicherungskopie
+
+Anders als bei Excel wird **in der Datei** geändert. Ohne `--out` legt das
+Werkzeug deshalb vorher eine Sicherungskopie an (abschaltbar mit
+`--no-backup`). Mit `--out` wird zuerst die ganze Datenbank kopiert und nur die
+Kopie bearbeitet – das Original bleibt dann garantiert unberührt. **Das ist der
+sicherste Weg.**
+
+### Grenzen und Prüfstand
+
+> **Der Schreibpfad ist ungetestet.** Diese Entwicklungsumgebung ist Linux,
+> ohne Access und ohne ACE-OLEDB – der COM-Teil konnte hier kein einziges Mal
+> laufen. Geprüft ist alles, was *entscheidet*, was geändert wird: Schlüsselwahl,
+> Verknüpfungsschutz, übersprungene Typen, `--keep`, Werterzeugung, Aufbau des
+> Änderungsplans und das Lesen der Rückmeldung (24 Tests). Ungeprüft ist die
+> Ausführung durch ACE-OLEDB selbst.
+>
+> **Bitte zuerst an einer Kopie testen** – am besten mit `--out`, dann ist das
+> Original ohnehin außen vor.
+
+Weiteres:
+
+- Verknüpfte und Systemtabellen werden nicht angefasst.
+- Zum Lesen wird die Datenbank vollständig in den Arbeitsspeicher geladen.
+- Die Datenbank darf während des Laufs **nicht** in Access geöffnet sein.
+
 ## Makro-Arbeitsmappen (`.xlsm`)
 
 Das VBA-Projekt wird **übernommen**. Die verwendete Bibliothek `exceljs` kennt
@@ -276,13 +355,12 @@ Makros verloren – auch darauf wird hingewiesen.
 npm test
 ```
 
-60 Tests zu Typerkennung, Werterhaltung, Dateibehandlung, Makro-Erhalt und
-Gleichlauf von Bündel und Quellcode. Die Bündel-Tests werden übersprungen,
+82 Tests zu Typerkennung, Werterhaltung, Dateibehandlung, Makro-Erhalt und
+Gleichlauf von Bündel und Quellcode sowie zur Access-Logik. Die Bündel-Tests werden übersprungen,
 solange `dist/` nicht gebaut ist.
 
 ## Grenzen
 
-- Nur **Excel** (`.xlsx` / `.xlsm`). **Kein Access** (`.accdb`/`.mdb`).
 - Das alte **`.xls`-Format** (BIFF) wird nicht gelesen; vorher in `.xlsx`
   umwandeln.
 - **Keine grafische Oberfläche** – bisher reine Kommandozeile.
@@ -314,15 +392,10 @@ solange `dist/` nicht gebaut ist.
 | `anonymisieren.sh` | Start unter Linux/macOS |
 | `node-v24.19.0-win-x64/node.exe` | Node.js-Laufzeit für Windows |
 | `dist/anonymize-xlsx.cjs` | Eigenständiges Bündel, erzeugt mit `npm run build` |
-| `src/cli.js` | Kommandozeile, Ausgabe der Berichte |
-| `src/anonymize.js` | Arbeitsmappe lesen, ersetzen, schreiben |
-| `src/inspect.js` | schnelle Struktur-Analyse für `--list` |
-| `src/ooxml.js` | direkter Zugriff auf den Dateiaufbau |
-| `src/cells.js` | Umgang mit den Zellformen von exceljs |
-| `src/keep.js` | Zerlegen und Anwenden der `--keep`-Angaben |
-| `src/classify.js` | Erkennung der Inhaltsart je Spalte |
-| `src/generators.js` | Erzeugung der Ersatzwerte |
-| `src/macros.js` | Erhalt des VBA-Projekts bei `.xlsm` |
+| `src/cli.js` | Kommandozeile, Engine-Weiche, Berichte |
+| `src/core/` | Typerkennung, Ersatzwerte, `--keep` – engine-neutral |
+| `src/excel/` | Excel-Engine (exceljs, Makro-Erhalt, OOXML) |
+| `src/access/` | Access: Lesen, Planen, Schreiben über PowerShell |
 | `test/` | Tests und Beispieldateien |
 
 ## Mitgelieferte Node.js-Laufzeit

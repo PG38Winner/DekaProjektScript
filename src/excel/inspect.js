@@ -13,7 +13,7 @@
 
 import ExcelJS from 'exceljs';
 
-import { classifyColumn } from './classify.js';
+import { classifyColumn } from '../core/classify.js';
 import { toPlainValue, isReadOnlyValue } from './cells.js';
 import {
   openWorkbookZip, readText, findInPartHead, listSheets, resolveRelationship, sheetPartPath,
@@ -142,6 +142,7 @@ async function scanSheet(worksheet) {
       index,
       kind: classifyColumn(name, samples.get(index) ?? []),
       readOnly: count.nonEmpty > 0 && count.readOnly === count.nonEmpty,
+      note: count.nonEmpty > 0 && count.readOnly === count.nonEmpty ? 'Formel' : null,
     });
   });
 
@@ -240,8 +241,9 @@ export function readColumns(sheet) {
       index,
       kind: classifyColumn(header, samples.get(index) ?? []),
       // Eine Spalte gilt als schreibgeschuetzt, wenn sie ausschliesslich aus
-      // Formeln besteht - wie die berechneten Felder der Access-Variante.
+      // Formeln besteht - wie die berechneten Felder in Access.
       readOnly: count.nonEmpty > 0 && count.readOnly === count.nonEmpty,
+      note: count.nonEmpty > 0 && count.readOnly === count.nonEmpty ? 'Formel' : null,
     };
   });
 }

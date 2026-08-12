@@ -97,7 +97,7 @@ describe('Eigenstaendiges Buendel (dist/)', { skip: !bundleExists && 'dist/ nich
     for (const [column, kind] of [['E-Mail', 'email'], ['Geburtsdatum', 'date'], ['Ort', 'city']]) {
       assert.match(stdout, new RegExp(`${column}\\s+${kind}`), `${column} fehlt in der Ausgabe`);
     }
-    assert.match(stdout, /Summe\s+Formel/);
+    assert.match(stdout, /Summe\s+wird uebersprungen\s+\[Formel\]/);
   });
 
   test('erhaelt auch im Buendel die Makros', async () => {
