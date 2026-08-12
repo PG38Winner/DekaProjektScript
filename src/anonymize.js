@@ -12,6 +12,7 @@ import { KINDS } from './classify.js';
 import { createGenerator } from './generators.js';
 import { readMacroParts, restoreMacroParts } from './macros.js';
 import { readColumns } from './inspect.js';
+import { parseKeep, isKept, validateKeep } from './keep.js';
 import { toPlainValue, isReadOnlyValue } from './cells.js';
 
 // `--list` kommt ohne vollstaendiges Einlesen der Datei aus und liegt deshalb
@@ -51,9 +52,9 @@ export async function anonymizeWorkbook({
   // Erst alle Blaetter einlesen, dann pruefen: --keep darf sich auf eine Spalte
   // beziehen, die nur in einem der Blaetter vorkommt.
   const prepared = selected.map((sheet) => ({ sheet, columns: readColumns(sheet) }));
-  validateKeep(keep, prepared);
+  const keepRules = parseKeep(keep);
+  validateKeep(keepRules, prepared);
 
-  const keepSet = new Set(keep.map(normalizeHeader));
   const generate = createGenerator({ seed, consistent });
   const report = {
     sheets: [],
@@ -84,7 +85,7 @@ export async function anonymizeWorkbook({
 
     const todo = [];
     for (const column of columns) {
-      const kept = keepSet.has(normalizeHeader(column.header));
+      const kept = isKept(keepRules, sheet.name, column.header);
       const columnEntry = {
         header: column.header,
         kind: column.kind,
@@ -232,28 +233,6 @@ function selectSheets(workbook, sheetName) {
   return [sheet];
 }
 
-/**
- * Prueft die --keep-Namen gegen alle zu verarbeitenden Blaetter. Ein Name muss
- * in mindestens einem Blatt vorkommen; wo er vorkommt, wirkt er.
- */
-function validateKeep(keep, prepared) {
-  if (!keep.length) return;
-
-  const known = new Set(
-    prepared.flatMap(({ columns }) => columns.map((column) => normalizeHeader(column.header))),
-  );
-  const unknown = keep.filter((name) => !known.has(normalizeHeader(name)));
-  if (!unknown.length) return;
-
-  const available = prepared
-    .filter(({ columns }) => columns.length)
-    .map(({ sheet, columns }) => `  ${sheet.name}: ${columns.map((c) => c.header).join(', ')}`)
-    .join('\n');
-
-  throw new Error(
-    `Unbekannte Spalte(n) in --keep: ${unknown.join(', ')}\nVorhanden:\n${available}`,
-  );
-}
 
 async function readWorkbook(file) {
   // exceljs meldet eine fehlende Datei nur als Text ohne ENOENT-Code, deshalb

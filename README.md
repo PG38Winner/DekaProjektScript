@@ -71,7 +71,7 @@ Die Beispiele verwenden `node src/cli.js`; mit dem Bündel entsprechend
 node src/cli.js daten.xlsx --list
 
 # Anonymisieren, Schlüsselspalten ausnehmen
-node src/cli.js daten.xlsx --keep "KundenID,Bestellnummer"
+node src/cli.js daten.xlsx --keep "Kunden:KundenID" --keep "Bestellungen:BestellID"
 
 # In eine neue Datei schreiben, bestimmtes Blatt, reproduzierbar
 node src/cli.js daten.xlsx --sheet Kunden --out anonym.xlsx --seed 42
@@ -81,12 +81,13 @@ node src/cli.js daten.xlsx --sheet Kunden --out anonym.xlsx --seed 42
 |--------|---------|
 | `--list` | Blätter, Spalten und erkannte Inhaltsart anzeigen |
 | `--sheet <name>` | nur dieses Arbeitsblatt (Standard: **alle** Blätter) |
-| `--keep <a,b,c>` | Spalten, die **unverändert** bleiben |
+| `--keep <angabe>` | Spalten, die **unverändert** bleiben – siehe unten |
 | `--out <datei>` | Ergebnis in neue Datei statt Überschreiben |
 | `--no-backup` | Keine Sicherungskopie anlegen |
 | `--no-consistent` | Gleiche Werte dürfen unterschiedliche Ersatzwerte erhalten |
 | `--seed <zahl>` | Fester Startwert für reproduzierbare Läufe |
 | `--dry-run` | Nur anzeigen, was passieren würde |
+| `--fast` | `--list` beschleunigen (liest die Datei nur teilweise) |
 | `-h`, `--help` | Hilfe anzeigen |
 
 > **Merksatz:**
@@ -99,18 +100,24 @@ zu ignorieren.
 
 ### Geschwindigkeit
 
-`--list` liest die Datei **nicht** vollständig ein. Es wertet nur die ersten
-200 Datenzeilen je Blatt aus – mehr braucht die Typerkennung nicht – und holt
-die Zeilenzahl aus dem Kopf des Blattes, ohne ihn zu entpacken. Gemessen an
-einer Datei mit 200.000 Zeilen × 30 Spalten (29 MB):
+`--list` liest die Datei standardmäßig **vollständig** ein. Das ist der
+belastbare Weg und funktioniert mit jeder lesbaren Datei.
 
-| | vollständiges Einlesen | `--list` heute |
+Mit **`--fast`** wird stattdessen nur der Anfang gelesen: die ersten 200
+Datenzeilen je Blatt – mehr braucht die Typerkennung nicht – und die Zeilenzahl
+aus dem Kopf des Blattes. Gemessen an einer Datei mit 200.000 Zeilen ×
+30 Spalten (29 MB):
+
+| | Standard | mit `--fast` |
 |---|---|---|
 | Dauer | 27,9 s | 1,4 s |
 | Arbeitsspeicher | 2,4 GB | gering |
 
-Steht die Zeilenzahl nicht im Dateikopf, meldet `--list` „Zeilenzahl
-unbekannt", statt die Datei dafür komplett zu lesen.
+> **`--fast` ist bewusst nicht der Standard.** In einer echten Arbeitsmappe
+> lieferte der schnelle Weg eine leere Anzeige; die Ursache ist noch nicht
+> geklärt. Erkennt er nichts Brauchbares, schaltet er selbsttätig auf den
+> vollständigen Weg um – verlassen sollte man sich darauf aber erst, wenn er
+> sich an den eigenen Dateien bewährt hat.
 
 Das **Anonymisieren** muss die Datei zwangsläufig ganz einlesen und wieder
 schreiben – dort bleibt es bei der Dauer, die Dateigröße und Excel-Format
@@ -125,8 +132,46 @@ genannten Blatt.
 Blätter ohne Kopfzeile (Deckblatt, Notizen) werden übersprungen und im Bericht
 als solche ausgewiesen; der Lauf bricht deswegen nicht ab.
 
-Ein Name in `--keep` muss in mindestens **einem** Blatt vorkommen und wirkt
-überall dort, wo es ihn gibt.
+### `--keep` je Arbeitsblatt
+
+`--keep` kennt zwei Schreibweisen, die sich beliebig kombinieren lassen:
+
+```bash
+# Gilt in JEDEM Arbeitsblatt
+--keep "KundenID"
+
+# Gilt nur im Blatt "Kunden"
+--keep "Kunden:KundenID"
+```
+
+Mehrfach angebbar – so lassen sich **beliebig viele** Blätter versorgen:
+
+```bash
+node src/cli.js daten.xlsx \
+  --keep "Kunden:KundenID" \
+  --keep "Bestellungen:BestellID,Bestellungen:KundenID" \
+  --keep "Artikel:ArtikelNr" \
+  --keep "Rechnungen:RechnungsNr"
+```
+
+Gleichwertig in einer einzigen Angabe:
+
+```bash
+--keep "Kunden:KundenID,Bestellungen:BestellID,Artikel:ArtikelNr"
+```
+
+Der Doppelpunkt eignet sich als Trenner, weil Excel ihn in Blattnamen nicht
+zulässt. Getrennt wird am **ersten** Doppelpunkt, ein Spaltenname darf also
+selbst welche enthalten. Enthält ein Spaltenname ein Komma, wird es mit `\,`
+maskiert – oder man gibt `--keep` einfach mehrfach an.
+
+Groß-/Kleinschreibung spielt weder bei Blatt- noch bei Spaltennamen eine Rolle.
+Ein Tippfehler bricht den Lauf ab, statt wirkungslos zu bleiben:
+
+```
+Fehlerhafte --keep-Angabe:
+  Spalte "kundeid" gibt es im Blatt "Kunden" nicht. Vorhanden: KundenID, Vorname, ...
+```
 
 ## Art der Anonymisierung
 
@@ -204,7 +249,7 @@ Makros verloren – auch darauf wird hingewiesen.
 npm test
 ```
 
-38 Tests zu Typerkennung, Werterhaltung, Dateibehandlung, Makro-Erhalt und
+53 Tests zu Typerkennung, Werterhaltung, Dateibehandlung, Makro-Erhalt und
 Gleichlauf von Bündel und Quellcode. Die Bündel-Tests werden übersprungen,
 solange `dist/` nicht gebaut ist.
 
@@ -247,6 +292,7 @@ solange `dist/` nicht gebaut ist.
 | `src/inspect.js` | schnelle Struktur-Analyse für `--list` |
 | `src/ooxml.js` | direkter Zugriff auf den Dateiaufbau |
 | `src/cells.js` | Umgang mit den Zellformen von exceljs |
+| `src/keep.js` | Zerlegen und Anwenden der `--keep`-Angaben |
 | `src/classify.js` | Erkennung der Inhaltsart je Spalte |
 | `src/generators.js` | Erzeugung der Ersatzwerte |
 | `src/macros.js` | Erhalt des VBA-Projekts bei `.xlsm` |

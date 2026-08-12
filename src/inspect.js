@@ -29,8 +29,14 @@ export const SAMPLE_SIZE = 200;
  * @param {string} file Pfad zur .xlsx/.xlsm-Datei.
  * @returns {Promise<Array<{name: string, rowCount: number|null, columns: Array}>>}
  */
-export async function inspectWorkbook(file) {
+export async function inspectWorkbook(file, { fast = false } = {}) {
   const rowCounts = await readRowCounts(file);
+
+  // Standard ist der vollstaendige, belastbare Weg. Der Datenstrom-Leser ist
+  // um ein Vielfaches schneller, hat sich aber an einer echten Arbeitsmappe als
+  // unzuverlaessig erwiesen (leere Anzeige), solange die Ursache nicht geklaert
+  // ist. Er laesst sich mit --fast anfordern.
+  if (!fast) return inspectByFullRead(file, rowCounts);
 
   try {
     return await inspectByStream(file, rowCounts);

@@ -42315,7 +42315,7 @@ var require_old = __commonJS({
     function maybeCallback(cb) {
       return typeof cb === "function" ? cb : rethrow();
     }
-    var normalize = pathModule.normalize;
+    var normalize2 = pathModule.normalize;
     if (isWindows) {
       nextPartRe = /(.*?)(?:[\/\\]+|$)/g;
     } else {
@@ -66690,8 +66690,8 @@ function build(kind, original) {
 function buildEmail() {
   const first = i2.person.firstName();
   const last = i2.person.lastName();
-  const normalize = (s2) => s2.toLowerCase().replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue").replace(/ß/g, "ss").replace(/[^a-z0-9]/g, "");
-  return `${normalize(first)}.${normalize(last)}@example.com`;
+  const normalize2 = (s2) => s2.toLowerCase().replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue").replace(/ß/g, "ss").replace(/[^a-z0-9]/g, "");
+  return `${normalize2(first)}.${normalize2(last)}@example.com`;
 }
 function buildZip(original) {
   const digits = String(original ?? "").replace(/\D/g, "").length || 5;
@@ -66962,8 +66962,9 @@ function isReadOnlyValue(raw) {
 
 // src/inspect.js
 var SAMPLE_SIZE = 200;
-async function inspectWorkbook(file) {
+async function inspectWorkbook(file, { fast = false } = {}) {
   const rowCounts = await readRowCounts(file);
+  if (!fast) return inspectByFullRead(file, rowCounts);
   try {
     return await inspectByStream(file, rowCounts);
   } catch (error) {
@@ -67148,6 +67149,82 @@ function collectSamples(sheet, headers) {
   return { samples, counts };
 }
 
+// src/keep.js
+function parseKeep(entries) {
+  const rules = { global: /* @__PURE__ */ new Set(), perSheet: /* @__PURE__ */ new Map(), raw: [] };
+  for (const entry of entries) {
+    const text = String(entry).trim();
+    if (!text) continue;
+    rules.raw.push(text);
+    const separator = text.indexOf(":");
+    if (separator === -1) {
+      rules.global.add(normalize(text));
+      continue;
+    }
+    const sheet = normalize(text.slice(0, separator));
+    const column = normalize(text.slice(separator + 1));
+    if (!sheet || !column) {
+      throw new Error(
+        `Ungueltige --keep-Angabe: "${text}"
+Erwartet wird "Spalte" oder "Blattname:Spalte".`
+      );
+    }
+    let columns = rules.perSheet.get(sheet);
+    if (!columns) {
+      columns = /* @__PURE__ */ new Set();
+      rules.perSheet.set(sheet, columns);
+    }
+    columns.add(column);
+  }
+  return rules;
+}
+function splitList(value) {
+  return String(value).split(/(?<!\\),/).map((part) => part.replace(/\\,/g, ",").trim()).filter(Boolean);
+}
+function isKept(rules, sheetName, header) {
+  const column = normalize(header);
+  if (rules.global.has(column)) return true;
+  const columns = rules.perSheet.get(normalize(sheetName));
+  return Boolean(columns && columns.has(column));
+}
+function validateKeep(rules, prepared) {
+  const sheetsByName = new Map(
+    prepared.map(({ sheet, columns }) => [
+      normalize(sheet.name),
+      { name: sheet.name, columns: columns.map((column) => column.header) }
+    ])
+  );
+  const problems = [];
+  for (const column of rules.global) {
+    const found = prepared.some(({ columns }) => columns.some((candidate) => normalize(candidate.header) === column));
+    if (!found) problems.push(`Spalte "${column}" kommt in keinem verarbeiteten Blatt vor.`);
+  }
+  for (const [sheetName, columns] of rules.perSheet) {
+    const sheet = sheetsByName.get(sheetName);
+    if (!sheet) {
+      problems.push(
+        `Arbeitsblatt "${sheetName}" wird nicht verarbeitet. Verarbeitet werden: ${[...sheetsByName.values()].map((s2) => s2.name).join(", ")}`
+      );
+      continue;
+    }
+    for (const column of columns) {
+      const found = sheet.columns.some((header) => normalize(header) === column);
+      if (!found) {
+        problems.push(
+          `Spalte "${column}" gibt es im Blatt "${sheet.name}" nicht. Vorhanden: ${sheet.columns.join(", ")}`
+        );
+      }
+    }
+  }
+  if (problems.length) {
+    throw new Error(`Fehlerhafte --keep-Angabe:
+  ${problems.join("\n  ")}`);
+  }
+}
+function normalize(value) {
+  return String(value).trim().toLowerCase();
+}
+
 // src/anonymize.js
 async function anonymizeWorkbook({
   file,
@@ -67162,8 +67239,8 @@ async function anonymizeWorkbook({
   const workbook = await readWorkbook(file);
   const selected = selectSheets(workbook, sheetName);
   const prepared = selected.map((sheet) => ({ sheet, columns: readColumns(sheet) }));
-  validateKeep(keep, prepared);
-  const keepSet = new Set(keep.map(normalizeHeader));
+  const keepRules = parseKeep(keep);
+  validateKeep(keepRules, prepared);
   const generate = createGenerator({ seed, consistent });
   const report = {
     sheets: [],
@@ -67189,7 +67266,7 @@ async function anonymizeWorkbook({
     }
     const todo = [];
     for (const column of columns) {
-      const kept = keepSet.has(normalizeHeader(column.header));
+      const kept = isKept(keepRules, sheet.name, column.header);
       const columnEntry = {
         header: column.header,
         kind: column.kind,
@@ -67278,20 +67355,6 @@ function selectSheets(workbook, sheetName) {
   }
   return [sheet];
 }
-function validateKeep(keep, prepared) {
-  if (!keep.length) return;
-  const known = new Set(
-    prepared.flatMap(({ columns }) => columns.map((column) => normalizeHeader(column.header)))
-  );
-  const unknown = keep.filter((name) => !known.has(normalizeHeader(name)));
-  if (!unknown.length) return;
-  const available = prepared.filter(({ columns }) => columns.length).map(({ sheet, columns }) => `  ${sheet.name}: ${columns.map((c2) => c2.header).join(", ")}`).join("\n");
-  throw new Error(
-    `Unbekannte Spalte(n) in --keep: ${unknown.join(", ")}
-Vorhanden:
-${available}`
-  );
-}
 async function readWorkbook(file) {
   try {
     await (0, import_promises3.access)(file, import_promises3.constants.R_OK);
@@ -67331,26 +67394,39 @@ Aufruf:
 Optionen:
   --list                Blaetter und Spalten anzeigen (nichts veraendern)
   --sheet <name>        Nur dieses Arbeitsblatt; Standard: ALLE Blaetter
-  --keep <a,b,c>        Spalten, die UNVERAENDERT bleiben (z. B. Schluessel, IDs)
+  --keep <angabe>       Spalten, die UNVERAENDERT bleiben. Zwei Schreibweisen:
+                          --keep "KundenID"           gilt in JEDEM Blatt
+                          --keep "Kunden:KundenID"    gilt nur im Blatt Kunden
+                        Mehrfach angebbar und kombinierbar, fuer beliebig
+                        viele Blaetter:
+                          --keep "Kunden:ID" --keep "Bestellungen:Nr"
+                          --keep "Kunden:ID,Bestellungen:Nr"
   --out <datei>         Ergebnis in neue Datei schreiben statt zu ueberschreiben
   --no-backup           Keine Sicherungskopie anlegen
   --no-consistent       Gleiche Werte muessen nicht denselben Ersatz erhalten
   --seed <zahl>         Fester Startwert - erzeugt reproduzierbare Ergebnisse
   --dry-run             Nur anzeigen, was passieren wuerde
+  --fast                --list beschleunigen (liest die Datei nur teilweise)
   -h, --help            Diese Hilfe
 
 Merksatz:
   In --keep genannt = bleibt unveraendert - alle anderen Spalten werden verschleiert.
+
+Beispiele:
+  anonymize-xlsx daten.xlsx --list
+  anonymize-xlsx daten.xlsx --keep "Kunden:KundenID" --keep "Bestellungen:BestellID"
+  anonymize-xlsx daten.xlsx --sheet Kunden --out anonym.xlsx --dry-run
 `.trim();
 var OPTIONS = {
   list: { type: "boolean", default: false },
   sheet: { type: "string" },
-  keep: { type: "string" },
+  keep: { type: "string", multiple: true },
   out: { type: "string" },
   backup: { type: "boolean", default: true },
   consistent: { type: "boolean", default: true },
   seed: { type: "string" },
   "dry-run": { type: "boolean", default: false },
+  fast: { type: "boolean", default: false },
   help: { type: "boolean", short: "h", default: false }
 };
 async function main() {
@@ -67372,11 +67448,11 @@ ${USAGE}`);
   }
   const file = positionals[0];
   if (values.list) {
-    await printStructure(file);
+    await printStructure(file, values.fast);
     return;
   }
   const seed = parseSeed(values.seed);
-  const keep = values.keep ? values.keep.split(",").map((s2) => s2.trim()).filter(Boolean) : [];
+  const keep = (values.keep ?? []).flatMap(splitList);
   const report = await anonymizeWorkbook({
     file,
     sheet: values.sheet,
@@ -67389,8 +67465,8 @@ ${USAGE}`);
   });
   printReport(report, values["dry-run"]);
 }
-async function printStructure(file) {
-  const sheets = await inspectWorkbook(file);
+async function printStructure(file, fast) {
+  const sheets = await inspectWorkbook(file, { fast });
   for (const sheet of sheets) {
     const rows = sheet.rowCount === null ? "Zeilenzahl unbekannt" : `${sheet.rowCount} Datenzeilen`;
     console.log(`

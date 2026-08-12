@@ -9,6 +9,7 @@
 
 import { parseArgs } from 'node:util';
 import { anonymizeWorkbook, inspectWorkbook } from './anonymize.js';
+import { splitList } from './keep.js';
 
 const USAGE = `
 Excel-Anonymisierer - verschleiert personenbezogene Daten in .xlsx/.xlsm
@@ -19,27 +20,40 @@ Aufruf:
 Optionen:
   --list                Blaetter und Spalten anzeigen (nichts veraendern)
   --sheet <name>        Nur dieses Arbeitsblatt; Standard: ALLE Blaetter
-  --keep <a,b,c>        Spalten, die UNVERAENDERT bleiben (z. B. Schluessel, IDs)
+  --keep <angabe>       Spalten, die UNVERAENDERT bleiben. Zwei Schreibweisen:
+                          --keep "KundenID"           gilt in JEDEM Blatt
+                          --keep "Kunden:KundenID"    gilt nur im Blatt Kunden
+                        Mehrfach angebbar und kombinierbar, fuer beliebig
+                        viele Blaetter:
+                          --keep "Kunden:ID" --keep "Bestellungen:Nr"
+                          --keep "Kunden:ID,Bestellungen:Nr"
   --out <datei>         Ergebnis in neue Datei schreiben statt zu ueberschreiben
   --no-backup           Keine Sicherungskopie anlegen
   --no-consistent       Gleiche Werte muessen nicht denselben Ersatz erhalten
   --seed <zahl>         Fester Startwert - erzeugt reproduzierbare Ergebnisse
   --dry-run             Nur anzeigen, was passieren wuerde
+  --fast                --list beschleunigen (liest die Datei nur teilweise)
   -h, --help            Diese Hilfe
 
 Merksatz:
   In --keep genannt = bleibt unveraendert - alle anderen Spalten werden verschleiert.
+
+Beispiele:
+  anonymize-xlsx daten.xlsx --list
+  anonymize-xlsx daten.xlsx --keep "Kunden:KundenID" --keep "Bestellungen:BestellID"
+  anonymize-xlsx daten.xlsx --sheet Kunden --out anonym.xlsx --dry-run
 `.trim();
 
 const OPTIONS = {
   list: { type: 'boolean', default: false },
   sheet: { type: 'string' },
-  keep: { type: 'string' },
+  keep: { type: 'string', multiple: true },
   out: { type: 'string' },
   backup: { type: 'boolean', default: true },
   consistent: { type: 'boolean', default: true },
   seed: { type: 'string' },
   'dry-run': { type: 'boolean', default: false },
+  fast: { type: 'boolean', default: false },
   help: { type: 'boolean', short: 'h', default: false },
 };
 
@@ -65,14 +79,13 @@ async function main() {
   const file = positionals[0];
 
   if (values.list) {
-    await printStructure(file);
+    await printStructure(file, values.fast);
     return;
   }
 
   const seed = parseSeed(values.seed);
-  const keep = values.keep
-    ? values.keep.split(',').map((s) => s.trim()).filter(Boolean)
-    : [];
+  // --keep darf mehrfach auftreten und je Angabe eine Kommaliste enthalten.
+  const keep = (values.keep ?? []).flatMap(splitList);
 
   const report = await anonymizeWorkbook({
     file,
@@ -88,8 +101,8 @@ async function main() {
   printReport(report, values['dry-run']);
 }
 
-async function printStructure(file) {
-  const sheets = await inspectWorkbook(file);
+async function printStructure(file, fast) {
+  const sheets = await inspectWorkbook(file, { fast });
 
   for (const sheet of sheets) {
     // Die Zeilenzahl stammt aus dem Kopf des Blattes; fehlt sie dort, wird sie
