@@ -1,9 +1,9 @@
 /**
  * Liest Access-Datenbanken (.accdb / .mdb).
  *
- * Gelesen wird mit `mdb-reader` - reines JavaScript, ohne ACE-OLEDB und ohne
- * Windows. Dadurch funktionieren `--list` und `--dry-run` auf jedem System.
- * Zum **Schreiben** ist weiterhin Windows mit ACE-OLEDB noetig, siehe write.js.
+ * Gelesen wird mit `mdb-reader` - reines JavaScript, ohne Zusatzsoftware und
+ * ohne Windows. Das Ergebnis wird als Excel-Arbeitsmappe geschrieben, die
+ * Datenbank selbst bleibt unveraendert (siehe export.js).
  *
  * Das Ergebnis hat dieselbe Form, die plan.js erwartet - eine schlichte
  * Beschreibung aus Tabellen, Spalten und Zeilen. So laesst sich die gesamte
@@ -66,8 +66,7 @@ function openDatabase(buffer, password) {
  * entscheidet, ob die Spalte beschreibbar ist.
  *
  * Autowert-Spalten (`autoLong`) und automatische GUIDs (`autoUUID`) vergibt
- * Access selbst - sie lassen sich nicht aktualisieren. Das entspricht der
- * Erkennung ueber COLUMN_FLAGS, die das fruehere PowerShell-Skript nutzte.
+ * Access selbst - ihre Werte sind Verwaltungsdaten und bleiben stehen.
  */
 function describeColumn(column) {
   const unsupported = UNSUPPORTED_TYPES.has(column.type);

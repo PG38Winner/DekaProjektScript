@@ -8,10 +8,9 @@ Daten** in
 
 Die Engine wird an der Dateiendung erkannt.
 
-Für Excel wird **kein installiertes Microsoft Excel** benötigt – gearbeitet
-wird direkt auf der Datei. Access wird ebenfalls ohne Zusatzsoftware
-**gelesen**; zum **Schreiben** ist Windows mit der Microsoft Access Database
-Engine nötig (siehe [Access](#access-datenbanken-accdb--mdb)).
+Alles läuft **vollständig in Node.js**, ohne Fremdprozesse und ohne
+Zusatzsoftware: kein installiertes Microsoft Excel, kein Access, kein
+ACE-OLEDB, kein PowerShell. Damit läuft es unter Windows, Linux und macOS.
 
 ## Einrichten
 
@@ -81,8 +80,8 @@ node src/cli.js daten.xlsx --sheet Kunden --out anonym.xlsx --seed 42
 | `--list` | Blätter, Spalten und erkannte Inhaltsart anzeigen |
 | `--sheet <name>` | nur dieses Arbeitsblatt (Standard: **alle** Blätter) |
 | `--keep <angabe>` | Spalten, die **unverändert** bleiben – siehe unten |
-| `--out <datei>` | Ergebnis in neue Datei statt Überschreiben |
-| `--no-backup` | Keine Sicherungskopie anlegen |
+| `--out <datei>` | Zieldatei: bei Excel statt Überschreiben, bei Access die zu schreibende Arbeitsmappe |
+| `--no-backup` | Keine Sicherungskopie anlegen (nur Excel; bei Access bleibt das Original ohnehin unberührt) |
 | `--no-consistent` | Gleiche Werte dürfen unterschiedliche Ersatzwerte erhalten |
 | `--seed <zahl>` | Fester Startwert für reproduzierbare Läufe |
 | `--dry-run` | Nur anzeigen, was passieren würde |
@@ -250,45 +249,48 @@ Ohne Seed ist jeder Lauf anders.
 ```bash
 node src/cli.js daten.accdb --list
 node src/cli.js daten.accdb --dry-run
-node src/cli.js daten.accdb --keep "Kunden:Kundennummer" --out anonym.accdb
+node src/cli.js daten.accdb --keep "Kunden:Kundennummer" --out anonym.xlsx
 ```
 
-### Was wo läuft
+### Das Ergebnis ist eine Excel-Arbeitsmappe
 
-| Schritt | Voraussetzung |
-|---------|---------------|
-| Lesen, `--list`, `--dry-run` | keine – läuft unter Windows, Linux und macOS |
-| Schreiben | **Windows** mit **Microsoft Access Database Engine** (ACE-OLEDB) |
+Gelesen wird die Datenbank mit `mdb-reader` – reines JavaScript. Geschrieben
+wird eine **neue Excel-Datei**, je Tabelle ein Arbeitsblatt. Ohne `--out`
+entsteht sie neben der Datenbank als `<datenbank>.anonymisiert.xlsx`.
 
-Gelesen wird mit `mdb-reader`, reinem JavaScript. Geschrieben wird über
-PowerShell und ADODB/ACE-OLEDB – das ist der einzige Weg, in eine `.accdb` zu
-schreiben. Das dafür nötige Skript wird über die Standardeingabe an
-`powershell -Command -` übergeben, ist also **kein** Skriptaufruf: die
-Ausführungsrichtlinie greift nicht, `Bypass` ist nicht nötig.
+**Die Datenbank selbst wird nie verändert.** Eine Sicherungskopie erübrigt
+sich damit – das Original kann gar nicht beschädigt werden.
 
-Läuft der Befehl ohne Windows, bricht er mit einer klaren Meldung ab, statt
-etwas halb zu erledigen.
+> **Warum nicht zurück in die `.accdb`?**
+> In eine Access-Datenbank schreiben kann nur die Microsoft Access Database
+> Engine (ACE-OLEDB). Aus reinem JavaScript ist das nicht möglich: Sämtliche
+> npm-Pakete für Access lesen entweder nur (`mdb-reader`, `accessdb-parser`)
+> oder rufen ACE über einen Fremdprozess auf – per PowerShell, VBScript oder
+> `mdbtools`. Einen eigenen Schreiber für das Dateiformat zu bauen, hieße
+> Seitenverwaltung und Indizes nachzubilden; ein Fehler dabei beschädigt die
+> Datenbank.
+
+Wer die anonymisierten Daten wieder in Access braucht, importiert die
+Arbeitsmappe dort (*Externe Daten → Excel*) – am besten in eine Kopie der
+Datenbank.
 
 ### Schlüssel und Verknüpfungen bleiben stehen
 
 Access ist kein Tabellenblatt: Datensätze hängen über Schlüssel zusammen.
-Das Werkzeug schützt diese Struktur von sich aus.
+Diese Struktur bleibt erhalten.
 
-- Als **Schlüsselspalte** wird der Autowert genommen; gibt es keinen, eine
-  Spalte, deren Werte in den gelesenen Daten **nachweislich eindeutig und
-  lückenlos** sind. Über sie wird später jeder Datensatz angesteuert.
-- Die Schlüsselspalte bleibt **immer unverändert** – sonst wären die Datensätze
-  nach dem ersten Schreibvorgang nicht mehr auffindbar.
+- Als **Schlüsselspalte** gilt der Autowert; gibt es keinen, eine Spalte,
+  deren Werte in den Daten **nachweislich eindeutig und lückenlos** sind.
+- Sie bleibt **unverändert**, damit die Datensätze unterscheidbar bleiben.
 - Eine Spalte, die in einer **anderen** Tabelle Schlüssel ist, bleibt ebenfalls
   stehen. Steht `KundenID` in *Kunden* als Schlüssel und in *Bestellungen* als
   Verweis, würden ersetzte Werte dort ins Leere zeigen.
 - **Autowert-Felder** und Typen, die sich nicht sinnvoll ersetzen lassen
-  (Anlagen, OLE-Objekte, Binärdaten, GUIDs), werden übersprungen.
-- Findet sich in einer Tabelle **keine** eindeutige Spalte, bleibt sie
-  unangetastet und wird gemeldet – ein Datensatz, den man nicht sicher
-  ansteuern kann, wird nicht angefasst.
+  (Anlagen, OLE-Objekte, Binärdaten, GUIDs), werden übernommen wie sie sind.
+- Tabellen **ohne** Schlüssel werden vollständig anonymisiert – dort gibt es
+  keine Verknüpfung zu schützen.
 
-Im Bericht ist jede dieser Entscheidungen sichtbar:
+Im Bericht ist jede Entscheidung sichtbar:
 
 ```
 Tabelle: Bestellungen  (3 Datenzeilen)
@@ -297,31 +299,24 @@ Tabelle: Bestellungen  (3 Datenzeilen)
   Betrag       anonymisiert              3 Zellen
 ```
 
-### Sicherungskopie
-
-Anders als bei Excel wird **in der Datei** geändert. Ohne `--out` legt das
-Werkzeug deshalb vorher eine Sicherungskopie an (abschaltbar mit
-`--no-backup`). Mit `--out` wird zuerst die ganze Datenbank kopiert und nur die
-Kopie bearbeitet – das Original bleibt dann garantiert unberührt. **Das ist der
-sicherste Weg.**
-
 ### Grenzen und Prüfstand
 
-> **Der Schreibpfad ist ungetestet.** Diese Entwicklungsumgebung ist Linux,
-> ohne Access und ohne ACE-OLEDB – der COM-Teil konnte hier kein einziges Mal
-> laufen. Geprüft ist alles, was *entscheidet*, was geändert wird: Schlüsselwahl,
-> Verknüpfungsschutz, übersprungene Typen, `--keep`, Werterzeugung, Aufbau des
-> Änderungsplans und das Lesen der Rückmeldung (24 Tests). Ungeprüft ist die
-> Ausführung durch ACE-OLEDB selbst.
+> **Das Einlesen einer echten `.accdb` ist ungetestet.** Diese
+> Entwicklungsumgebung ist Linux und hatte keine Access-Datenbank zur
+> Verfügung. Geprüft ist alles Übrige – Schlüsselwahl, Verknüpfungsschutz,
+> übersprungene Typen, `--keep`, Werterzeugung und die geschriebene
+> Arbeitsmappe samt Datentypen (20 Tests). Ungeprüft bleibt die Anbindung von
+> `mdb-reader` an eine reale Datei.
 >
-> **Bitte zuerst an einer Kopie testen** – am besten mit `--out`, dann ist das
-> Original ohnehin außen vor.
+> Ein Risiko für die Daten besteht dabei nicht: Die Datenbank wird nur
+> gelesen.
 
 Weiteres:
 
-- Verknüpfte und Systemtabellen werden nicht angefasst.
+- Verknüpfte und Systemtabellen werden nicht gelesen.
 - Zum Lesen wird die Datenbank vollständig in den Arbeitsspeicher geladen.
-- Die Datenbank darf während des Laufs **nicht** in Access geöffnet sein.
+- Tabellennamen über 31 Zeichen werden für das Arbeitsblatt gekürzt; das wird
+  gemeldet.
 
 ## Makro-Arbeitsmappen (`.xlsm`)
 
@@ -359,7 +354,7 @@ Makros verloren – auch darauf wird hingewiesen.
 npm test
 ```
 
-88 Tests zu Typerkennung, Werterhaltung, Dateibehandlung, Makro-Erhalt und
+87 Tests zu Typerkennung, Werterhaltung, Dateibehandlung, Makro-Erhalt und
 Gleichlauf von Bündel und Quellcode sowie zur Access-Logik. Die Bündel-Tests werden übersprungen,
 solange `dist/` nicht gebaut ist.
 
@@ -399,7 +394,7 @@ solange `dist/` nicht gebaut ist.
 | `src/cli.js` | Kommandozeile, Engine-Weiche, Berichte |
 | `src/core/` | Typerkennung, Ersatzwerte, `--keep` – engine-neutral |
 | `src/excel/` | Excel-Engine: sparsamer Leser, exceljs, Makro-Erhalt, OOXML |
-| `src/access/` | Access: Lesen, Planen, Schreiben über PowerShell |
+| `src/access/` | Access: Lesen, Planen, Schreiben als Arbeitsmappe |
 | `test/` | Tests und Beispieldateien |
 
 ## Mitgelieferte Node.js-Laufzeit

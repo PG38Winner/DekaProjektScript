@@ -1,21 +1,21 @@
 /**
  * Anonymisiert Access-Datenbanken (.accdb / .mdb).
  *
- * Ablauf:
- *   1. Lesen mit mdb-reader (reines JavaScript, ueberall lauffaehig)
- *   2. Planen in plan.js (kennt weder Access noch COM, vollstaendig geprueft)
- *   3. Schreiben ueber PowerShell/ACE-OLEDB (nur Windows)
+ * Ablauf, vollstaendig in Node.js und ohne Fremdprozesse:
+ *   1. Lesen mit mdb-reader (reines JavaScript)
+ *   2. Planen in plan.js
+ *   3. Schreiben als Excel-Arbeitsmappe, je Tabelle ein Blatt
  *
- * Die ersten beiden Schritte genuegen fuer `--list` und `--dry-run`; wer nur
- * sehen will, was passieren wuerde, braucht kein Windows.
+ * Die Quelldatenbank wird dabei **nie veraendert**. In eine .accdb
+ * zurueckzuschreiben kann nur die Microsoft Access Database Engine, und die
+ * laesst sich aus reinem JavaScript nicht ansprechen - siehe export.js.
  */
 
-import { copyFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { readDatabase } from './read.js';
 import { planAnonymization } from './plan.js';
-import { applyPlan } from './write.js';
+import { writeWorkbook } from './export.js';
 
 /**
  * Liest die Struktur der Datenbank: Tabellen, Spalten, erkannte Inhaltsart.
@@ -39,10 +39,17 @@ export async function inspectDatabase(file, { password } = {}) {
         header: column.header,
         kind: column.kind,
         readOnly: column.status.startsWith('uebersprungen'),
-        note: column.status.startsWith('unveraendert (Schluessel)') ? 'Schluessel' : null,
+        note: noteFor(column.status),
       })),
     };
   });
+}
+
+function noteFor(status) {
+  if (status.includes('(Schluessel)')) return 'Schluessel';
+  if (status.includes('(Verknuepfung)')) return 'Verknuepfung';
+  const skipped = /^uebersprungen \((.+)\)$/.exec(status);
+  return skipped ? skipped[1] : null;
 }
 
 /**
@@ -50,8 +57,7 @@ export async function inspectDatabase(file, { password } = {}) {
  * @param {string} options.file          Eingabedatenbank.
  * @param {string} [options.table]       Nur diese Tabelle; Standard: alle.
  * @param {string[]} [options.keep]      --keep-Angaben.
- * @param {string} [options.out]         Ergebnis in eine Kopie schreiben.
- * @param {boolean} [options.backup]     Sicherungskopie anlegen (Standard: true).
+ * @param {string} [options.out]         Zieldatei (.xlsx); Standard: neben der Datenbank.
  * @param {boolean} [options.dryRun]     Nur planen, nichts schreiben.
  * @param {number} [options.seed]
  * @param {boolean} [options.consistent]
@@ -63,59 +69,29 @@ export async function anonymizeDatabase({
   table,
   keep = [],
   out,
-  backup = true,
   dryRun = false,
   seed,
   consistent = true,
   password,
 }) {
   const tables = await readDatabase(file, { password });
-  const { report, plan } = planAnonymization(tables, { keep, table, seed, consistent });
+  const { report, result } = planAnonymization(tables, { keep, table, seed, consistent });
 
   if (dryRun) return report;
 
-  // Anders als bei Excel wird nicht neu geschrieben, sondern in der Datei
-  // geaendert. Fuer --out wird deshalb zuerst kopiert und dann die Kopie
-  // bearbeitet - das Original bleibt so garantiert unberuehrt.
-  const target = out ? path.resolve(out) : path.resolve(file);
-  if (out) await copyFile(path.resolve(file), target);
-  else if (backup) report.backup = await createBackup(file);
-
-  if (!plan.tables.length) {
-    report.output = target;
-    report.warnings.push('Es gab nichts zu aendern.');
-    return report;
-  }
-
-  const result = await applyPlan(target, plan);
+  const target = out ? path.resolve(out) : defaultTarget(file);
+  report.warnings.push(...await writeWorkbook(target, result));
   report.output = target;
-  report.warnings.push(...result.errors);
-
-  for (const applied of result.tables) {
-    const entry = report.sheets.find((sheet) => sheet.name === applied.name);
-    if (entry) entry.applied = applied.updated;
-
-    if (applied.unmatched > 0) {
-      report.warnings.push(
-        `In "${applied.name}" wurden ${applied.unmatched} geplante Datensaetze nicht ` +
-        'wiedergefunden. Wurde die Datenbank zwischenzeitlich veraendert?',
-      );
-    }
-  }
 
   return report;
 }
 
-/** Legt "datenbank.backup-<zeitstempel>.accdb" neben der Originaldatei an. */
-async function createBackup(file) {
+/** "kunden.accdb" -> "kunden.anonymisiert.xlsx" */
+function defaultTarget(file) {
   const resolved = path.resolve(file);
   const extension = path.extname(resolved);
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const target = path.join(
+  return path.join(
     path.dirname(resolved),
-    `${path.basename(resolved, extension)}.backup-${stamp}${extension}`,
+    `${path.basename(resolved, extension)}.anonymisiert.xlsx`,
   );
-
-  await copyFile(resolved, target);
-  return target;
 }

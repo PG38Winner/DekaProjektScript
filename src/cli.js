@@ -53,7 +53,9 @@ Optionen:
                           --keep "*:ID"              wieder fuer jedes Blatt
                         Mehrfach angebbar; jede Angabe beginnt neu:
                           --keep "Kunden:ID,Name" --keep "Artikel:Nr"
-  --out <datei>         Ergebnis in neue Datei schreiben statt zu ueberschreiben
+  --out <datei>         Zieldatei. Bei Excel statt Ueberschreiben; bei Access
+                        die zu schreibende Arbeitsmappe (Standard:
+                        <datenbank>.anonymisiert.xlsx)
   --no-backup           Keine Sicherungskopie anlegen
   --no-consistent       Gleiche Werte muessen nicht denselben Ersatz erhalten
   --seed <zahl>         Fester Startwert - erzeugt reproduzierbare Ergebnisse
@@ -65,9 +67,12 @@ Optionen:
   -h, --help            Diese Hilfe
 
 Access:
-  Lesen, --list und --dry-run laufen auf jedem System. Das Schreiben braucht
-  Windows mit der Microsoft Access Database Engine (ACE-OLEDB).
-  Schluesselspalten werden erkannt und bleiben immer unveraendert.
+  Laeuft vollstaendig in Node.js, auf jedem System und ohne Zusatzsoftware.
+  Das Ergebnis wird als Excel-Arbeitsmappe geschrieben, je Tabelle ein Blatt -
+  die Datenbank selbst bleibt unveraendert. In eine .accdb zurueckzuschreiben
+  kann nur die Microsoft Access Database Engine; aus reinem JavaScript geht
+  das nicht.
+  Schluessel- und Verknuepfungsspalten werden erkannt und bleiben stehen.
 
 Merksatz:
   In --keep genannt = bleibt unveraendert - alle anderen Spalten werden verschleiert.
@@ -76,7 +81,7 @@ Beispiele:
   anonymisieren daten.xlsx --list
   anonymisieren daten.xlsx --keep "Kunden:KundenID,Nachname" --keep "Artikel:Nr"
   anonymisieren daten.accdb --dry-run
-  anonymisieren daten.accdb --keep "Kunden:KundenID" --out anonym.accdb
+  anonymisieren daten.accdb --keep "Kunden:Kundennummer" --out anonym.xlsx
 `.trim();
 
 const OPTIONS = {

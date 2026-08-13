@@ -1,11 +1,10 @@
 /**
  * Ermittelt, was in einer Access-Datenbank ersetzt wird, und erzeugt daraus
- * einen Aenderungsplan.
+ * die anonymisierten Tabellen.
  *
- * Dieses Modul kennt weder Access noch COM - es arbeitet auf einer schlichten
+ * Dieses Modul kennt Access nicht - es arbeitet auf einer schlichten
  * Beschreibung aus Tabellen, Spalten und Zeilen. Dadurch laesst sich die
- * gesamte Entscheidungslogik ohne Datenbank pruefen, obwohl das eigentliche
- * Schreiben nur unter Windows moeglich ist.
+ * gesamte Entscheidungslogik ohne Datenbank pruefen.
  */
 
 import { classifyColumn, KINDS } from '../core/classify.js';
@@ -29,7 +28,7 @@ const KEY_NAME_HINT = /(id|nr|nummer|schluessel|key)$/i;
  * @param {string} [options.table]       Nur diese Tabelle.
  * @param {number} [options.seed]
  * @param {boolean} [options.consistent]
- * @returns {{report: object, plan: object}}
+ * @returns {{report: object, result: {tables: Array}}}
  */
 export function planAnonymization(tables, {
   keep = [],
@@ -67,7 +66,7 @@ export function planAnonymization(tables, {
     backup: null,
     warnings: [],
   };
-  const plan = { tables: [] };
+  const result = { tables: [] };
 
   for (const { table, columns } of prepared) {
     const entry = {
@@ -98,39 +97,20 @@ export function planAnonymization(tables, {
       if (status.anonymize) targets.push({ column, entry: entry.columns.at(-1) });
     }
 
-    if (!targets.length) {
-      report.sheets.push(entry);
-      continue;
-    }
-
-    if (!key) {
-      entry.skipped = 'keine eindeutige Schluesselspalte gefunden';
-      report.warnings.push(
-        `Tabelle "${table.name}" hat keine Spalte mit durchgaengig eindeutigen Werten. ` +
-        'Ohne sie laesst sich kein Datensatz sicher ansteuern - die Tabelle bleibt unveraendert.',
-      );
-      report.sheets.push(entry);
-      continue;
-    }
-
-    const updates = buildUpdates(table, targets, key, generate);
-    entry.changed = updates.reduce((sum, update) => sum + Object.keys(update.v).length, 0);
-    report.changed += entry.changed;
+    const { rows, changed } = buildRows(table, columns, targets, generate);
+    entry.changed = changed;
+    report.changed += changed;
     report.rows += table.rowCount;
     report.sheets.push(entry);
 
-    if (updates.length) {
-      plan.tables.push({
-        name: table.name,
-        key: key.name,
-        keyType: key.type,
-        types: Object.fromEntries(targets.map(({ column }) => [column.name, column.type])),
-        updates,
-      });
-    }
+    result.tables.push({
+      name: table.name,
+      columns: columns.map((column) => ({ name: column.name, type: column.type })),
+      rows,
+    });
   }
 
-  return { report, plan };
+  return { report, result };
 }
 
 /** Leitet fuer jede Spalte die Inhaltsart aus Name und Werten ab. */
@@ -170,17 +150,16 @@ function columnStatus(column, key, keyNames, keepRules, tableName) {
 }
 
 /**
- * Waehlt die Spalte, ueber die ein Datensatz spaeter angesteuert wird.
+ * Findet die Spalte, die die Datensaetze der Tabelle identifiziert.
  *
  * Bevorzugt wird der Autowert - in Access ist das praktisch immer der
  * Primaerschluessel. Sonst kommt jede Spalte in Frage, deren Werte
- * durchgaengig vorhanden und eindeutig sind; die Eindeutigkeit wird an den
- * gelesenen Daten geprueft und nicht dem Schema geglaubt, denn nur sie
- * entscheidet, ob ein UPDATE genau einen Datensatz trifft.
+ * durchgaengig vorhanden und eindeutig sind; geprueft wird das an den
+ * gelesenen Daten und nicht am Schema.
  *
- * Die Schluesselspalte bleibt immer unveraendert - andernfalls waeren die
- * Datensaetze nach dem ersten Schreibvorgang nicht mehr auffindbar, und
- * Beziehungen zu anderen Tabellen wuerden zerreissen.
+ * Die Schluesselspalte bleibt unveraendert, damit die Beziehungen zwischen
+ * den Tabellen erhalten bleiben. Findet sich keine, ist auch nichts zu
+ * schuetzen - dann werden alle Spalten anonymisiert.
  */
 export function chooseKeyColumn(table, columns) {
   const autoNumber = columns.find((column) => column.autoNumber);
@@ -207,28 +186,39 @@ function isUnique(rows, name) {
   return true;
 }
 
-/** Erzeugt je Datensatz die neuen Werte, angesteuert ueber den Schluessel. */
-function buildUpdates(table, targets, key, generate) {
-  const updates = [];
+/**
+ * Baut die vollstaendigen Datensaetze der anonymisierten Tabelle: unberuehrte
+ * Spalten unveraendert, die uebrigen ersetzt.
+ */
+function buildRows(table, columns, targets, generate) {
+  const replace = new Map(targets.map(({ column, entry }) => [column.name, { column, entry }]));
+  const rows = [];
+  let changed = 0;
 
-  for (const row of table.rows) {
-    const values = {};
+  for (const source of table.rows) {
+    const row = {};
 
-    for (const { column, entry } of targets) {
-      const original = row[column.name];
-      // NULL- und Leerwerte bleiben erhalten.
-      if (original === null || original === undefined || original === '') continue;
+    for (const column of columns) {
+      const original = source[column.name];
+      const target = replace.get(column.name);
 
-      values[column.name] = generate(column.kind, original, `${column.kind}:${column.name.toLowerCase()}`);
-      entry.changed += 1;
+      // Unberuehrte Spalten sowie NULL- und Leerwerte werden uebernommen.
+      if (!target || original === null || original === undefined || original === '') {
+        row[column.name] = original ?? null;
+        continue;
+      }
+
+      row[column.name] = generate(
+        target.column.kind, original, `${target.column.kind}:${column.name.toLowerCase()}`,
+      );
+      target.entry.changed += 1;
+      changed += 1;
     }
 
-    if (Object.keys(values).length) {
-      updates.push({ k: row[key.name], v: values });
-    }
+    rows.push(row);
   }
 
-  return updates;
+  return { rows, changed };
 }
 
 function selectTables(tables, tableName) {
