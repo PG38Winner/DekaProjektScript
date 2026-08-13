@@ -62,9 +62,9 @@ describe('inspectWorkbook', () => {
     zip.file('xl/worksheets/sheet1.xml', sheetXml.replace(/<dimension\b[^>]*\/>/, ''));
     await writeFile(file, await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
 
-    // Betrifft den schnellen Weg: dort ist der dimension-Eintrag die einzige
-    // Quelle fuer die Zeilenzahl.
-    const [kunden] = await inspectWorkbook(file, { fast: true });
+    // Ohne dimension-Eintrag bleibt die Zeilenzahl offen; die Spalten muessen
+    // trotzdem erkannt werden.
+    const [kunden] = await inspectWorkbook(file);
     assert.equal(kunden.rowCount, null, 'ohne Angabe bleibt die Zeilenzahl offen');
     assert.ok(kunden.columns.length > 0, 'die Spalten werden trotzdem erkannt');
     assert.equal(kunden.columns.find((c) => c.header === 'E-Mail').kind, 'email');

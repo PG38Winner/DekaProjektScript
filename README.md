@@ -88,7 +88,7 @@ node src/cli.js daten.xlsx --sheet Kunden --out anonym.xlsx --seed 42
 | `--dry-run` | Nur anzeigen, was passieren würde |
 | `--table <name>` | wie `--sheet`, für Access-Tabellen |
 | `--password <wort>` | Kennwort der Access-Datenbank |
-| `--fast` | `--list` beschleunigen (nur Excel; liest die Datei teilweise) |
+| `--full` | `--list` liest die Datei vollständig (nur Excel; Rückfall) |
 | `-h`, `--help` | Hilfe anzeigen |
 
 > **Merksatz:**
@@ -99,26 +99,30 @@ Spaltennamen in `--keep` werden ohne Rücksicht auf Groß-/Kleinschreibung
 verglichen; ein unbekannter Name bricht den Lauf ab, statt ihn stillschweigend
 zu ignorieren.
 
-### Geschwindigkeit
+### Geschwindigkeit und große Dateien
 
-`--list` liest die Datei standardmäßig **vollständig** ein. Das ist der
-belastbare Weg und funktioniert mit jeder lesbaren Datei.
+`--list` liest die Datei **nicht** vollständig ein. Ein eigener Leser holt nur
+die Kopfzeile und die ersten 200 Datenzeilen je Blatt – mehr braucht die
+Typerkennung nicht – und nimmt die Zeilenzahl aus dem Kopf des Blattes.
 
-Mit **`--fast`** wird stattdessen nur der Anfang gelesen: die ersten 200
-Datenzeilen je Blatt – mehr braucht die Typerkennung nicht – und die Zeilenzahl
-aus dem Kopf des Blattes. Gemessen an einer Datei mit 200.000 Zeilen ×
-30 Spalten (29 MB):
+Der Speicherbedarf hängt dadurch an der **Dateigröße**, nicht an der
+Zeilenzahl. Gemessen an einer Datei mit 200.000 Zeilen × 30 Spalten (29 MB):
 
-| | Standard | mit `--fast` |
+| | vollständiges Einlesen (`--full`) | Standard |
 |---|---|---|
-| Dauer | 27,9 s | 1,4 s |
-| Arbeitsspeicher | 2,4 GB | gering |
+| Dauer | 27,9 s | **0,4 s** |
+| Arbeitsspeicher | 2,4 GB | **~110 MB** |
 
-> **`--fast` ist bewusst nicht der Standard.** In einer echten Arbeitsmappe
-> lieferte der schnelle Weg eine leere Anzeige; die Ursache ist noch nicht
-> geklärt. Erkennt er nichts Brauchbares, schaltet er selbsttätig auf den
-> vollständigen Weg um – verlassen sollte man sich darauf aber erst, wenn er
-> sich an den eigenen Dateien bewährt hat.
+Das vollständige Einlesen scheitert an sehr großen Arbeitsmappen schlicht am
+Arbeitsspeicher – deshalb ist der sparsame Weg der Standard.
+
+Scheitert er an einer Datei, wird **selbsttätig** vollständig eingelesen: er
+ist eine Beschleunigung, keine Bedingung. Mit `--full` lässt sich der
+vollständige Weg erzwingen. Ein Test vergleicht beide Wege und schlägt an,
+sobald sie unterschiedliche Ergebnisse liefern.
+
+Steht die Zeilenzahl nicht im Dateikopf, meldet `--list` „Zeilenzahl
+unbekannt", statt die Datei dafür komplett zu lesen.
 
 Das **Anonymisieren** muss die Datei zwangsläufig ganz einlesen und wieder
 schreiben – dort bleibt es bei der Dauer, die Dateigröße und Excel-Format
@@ -355,7 +359,7 @@ Makros verloren – auch darauf wird hingewiesen.
 npm test
 ```
 
-82 Tests zu Typerkennung, Werterhaltung, Dateibehandlung, Makro-Erhalt und
+88 Tests zu Typerkennung, Werterhaltung, Dateibehandlung, Makro-Erhalt und
 Gleichlauf von Bündel und Quellcode sowie zur Access-Logik. Die Bündel-Tests werden übersprungen,
 solange `dist/` nicht gebaut ist.
 
@@ -394,7 +398,7 @@ solange `dist/` nicht gebaut ist.
 | `dist/anonymize-xlsx.cjs` | Eigenständiges Bündel, erzeugt mit `npm run build` |
 | `src/cli.js` | Kommandozeile, Engine-Weiche, Berichte |
 | `src/core/` | Typerkennung, Ersatzwerte, `--keep` – engine-neutral |
-| `src/excel/` | Excel-Engine (exceljs, Makro-Erhalt, OOXML) |
+| `src/excel/` | Excel-Engine: sparsamer Leser, exceljs, Makro-Erhalt, OOXML |
 | `src/access/` | Access: Lesen, Planen, Schreiben über PowerShell |
 | `test/` | Tests und Beispieldateien |
 

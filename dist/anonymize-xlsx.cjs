@@ -66945,6 +66945,228 @@ function setAttribute(xml, tagName, attribute, value) {
 // src/excel/inspect.js
 var import_exceljs = __toESM(require_excel(), 1);
 
+// src/excel/scan.js
+var BUILTIN_DATE_FORMATS = /* @__PURE__ */ new Set([14, 15, 16, 17, 18, 19, 20, 21, 22, 45, 46, 47]);
+async function scanWorkbook(file, sampleRows) {
+  const zip = await openWorkbookZip(file);
+  const workbookXml = await readText(zip, "xl/workbook.xml");
+  const rels = await readText(zip, "xl/_rels/workbook.xml.rels");
+  const sheetEntries = listSheets(workbookXml);
+  if (!sheetEntries.length) throw new Error("Keine Arbeitsblaetter in der Datei gefunden.");
+  const dateStyles = await readDateStyles(zip);
+  const sheets = [];
+  let maxStringIndex = -1;
+  for (const entry of sheetEntries) {
+    const target = resolveRelationship(rels, entry.rid);
+    if (!target) continue;
+    const scanned = await scanSheetPart(zip, sheetPartPath(target), sampleRows);
+    maxStringIndex = Math.max(maxStringIndex, scanned.maxStringIndex);
+    sheets.push({ name: entry.name, ...scanned });
+  }
+  const strings = maxStringIndex >= 0 ? await readSharedStrings(zip, maxStringIndex) : [];
+  return sheets.map((sheet) => ({
+    name: sheet.name,
+    rowCount: sheet.lastRow === null ? null : Math.max(sheet.lastRow - 1, 0),
+    columns: buildColumns(sheet, strings, dateStyles)
+  }));
+}
+async function scanSheetPart(zip, path5, sampleRows) {
+  const header = /* @__PURE__ */ new Map();
+  const samples = /* @__PURE__ */ new Map();
+  const readOnly = /* @__PURE__ */ new Map();
+  let lastRow = null;
+  let dataRows = 0;
+  let maxStringIndex = -1;
+  await streamPart(zip, path5, (chunk, stop) => {
+    if (lastRow === null) {
+      const dimension = /<dimension\b[^>]*\bref="([^"]*)"/.exec(chunk.text);
+      if (dimension) lastRow = lastRowOfRange(dimension[1]);
+    }
+    for (const row of takeRows(chunk)) {
+      if (row.number === 1) {
+        for (const cell of parseCells(row.body)) {
+          header.set(cell.column, cell);
+          if (cell.type === "s") maxStringIndex = Math.max(maxStringIndex, Number(cell.value));
+        }
+        continue;
+      }
+      if (dataRows >= sampleRows) return stop();
+      for (const cell of parseCells(row.body)) {
+        if (cell.value === null && !cell.inline) continue;
+        const counts = readOnly.get(cell.column) ?? { nonEmpty: 0, formula: 0 };
+        counts.nonEmpty += 1;
+        if (cell.formula) counts.formula += 1;
+        readOnly.set(cell.column, counts);
+        if (cell.formula) continue;
+        const list = samples.get(cell.column) ?? [];
+        if (list.length < sampleRows) list.push(cell);
+        samples.set(cell.column, list);
+        if (cell.type === "s") maxStringIndex = Math.max(maxStringIndex, Number(cell.value));
+      }
+      dataRows += 1;
+    }
+  });
+  return { header, samples, readOnly, lastRow, maxStringIndex };
+}
+function buildColumns(sheet, strings, dateStyles) {
+  const columns = [];
+  for (const [index, headerCell] of [...sheet.header].sort((a2, b2) => a2[0] - b2[0])) {
+    const name = String(resolveValue(headerCell, strings, dateStyles) ?? "").trim();
+    if (!name) continue;
+    const counts = sheet.readOnly.get(index) ?? { nonEmpty: 0, formula: 0 };
+    const values = (sheet.samples.get(index) ?? []).map((cell) => resolveValue(cell, strings, dateStyles)).filter((value) => value !== null && value !== "");
+    columns.push({
+      header: name,
+      index,
+      values,
+      readOnly: counts.nonEmpty > 0 && counts.formula === counts.nonEmpty
+    });
+  }
+  return columns;
+}
+function resolveValue(cell, strings, dateStyles) {
+  if (cell.inline !== null) return cell.inline;
+  if (cell.value === null) return null;
+  switch (cell.type) {
+    case "s":
+      return strings[Number(cell.value)] ?? null;
+    case "str":
+    case "e":
+      return cell.value;
+    case "b":
+      return cell.value === "1";
+    default: {
+      const numeric = Number(cell.value);
+      if (!Number.isFinite(numeric)) return cell.value;
+      return dateStyles.has(cell.style) ? excelSerialToDate(numeric) : numeric;
+    }
+  }
+}
+function excelSerialToDate(serial) {
+  return new Date(Math.round((serial - 25569) * 86400 * 1e3));
+}
+async function readDateStyles(zip) {
+  const xml = await readText(zip, "xl/styles.xml");
+  const dateStyles = /* @__PURE__ */ new Set();
+  if (!xml) return dateStyles;
+  const custom = /* @__PURE__ */ new Map();
+  for (const match of xml.matchAll(/<numFmt\b[^>]*numFmtId="(\d+)"[^>]*formatCode="([^"]*)"/g)) {
+    const code = decodeXml(match[2]).replace(/"[^"]*"/g, "").replace(/\[[^\]]*\]/g, "");
+    custom.set(Number(match[1]), /[ymdhs]/i.test(code));
+  }
+  const cellXfs = /<cellXfs\b[\s\S]*?<\/cellXfs>/.exec(xml);
+  if (!cellXfs) return dateStyles;
+  let styleIndex = 0;
+  for (const match of cellXfs[0].matchAll(/<xf\b[^>]*>/g)) {
+    const numFmtId = Number(/\bnumFmtId="(\d+)"/.exec(match[0])?.[1] ?? 0);
+    if (BUILTIN_DATE_FORMATS.has(numFmtId) || custom.get(numFmtId)) dateStyles.add(styleIndex);
+    styleIndex += 1;
+  }
+  return dateStyles;
+}
+async function readSharedStrings(zip, maxIndex) {
+  const strings = [];
+  await streamPart(zip, "xl/sharedStrings.xml", (chunk, stop) => {
+    const pattern = /<si\b[^>]*>([\s\S]*?)<\/si>|<si\b[^>]*\/>/g;
+    let match;
+    let consumed = 0;
+    while ((match = pattern.exec(chunk.text)) !== null) {
+      strings.push(match[1] === void 0 ? "" : textOf(match[1]));
+      consumed = match.index + match[0].length;
+      if (strings.length > maxIndex) break;
+    }
+    chunk.keepFrom(consumed);
+    if (strings.length > maxIndex) stop();
+  });
+  return strings;
+}
+function textOf(xml) {
+  let text = "";
+  for (const match of xml.matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)) text += decodeXml(match[1]);
+  return text;
+}
+function takeRows(chunk) {
+  const rows = [];
+  const pattern = /<row\b([^>]*)(?:\/>|>([\s\S]*?)<\/row>)/g;
+  let match;
+  let consumed = 0;
+  while ((match = pattern.exec(chunk.text)) !== null) {
+    const number = Number(/\br="(\d+)"/.exec(match[1])?.[1] ?? 0);
+    rows.push({ number, body: match[2] ?? "" });
+    consumed = match.index + match[0].length;
+  }
+  chunk.keepFrom(consumed);
+  return rows;
+}
+function* parseCells(body) {
+  const pattern = /<c\b([^>]*)(?:\/>|>([\s\S]*?)<\/c>)/g;
+  let match;
+  while ((match = pattern.exec(body)) !== null) {
+    const attributes = match[1];
+    const content = match[2] ?? "";
+    const reference = /\br="([A-Z]+)\d+"/.exec(attributes);
+    if (!reference) continue;
+    const inline = /<is\b[^>]*>([\s\S]*?)<\/is>/.exec(content);
+    const value = /<v\b[^>]*>([\s\S]*?)<\/v>/.exec(content);
+    yield {
+      column: columnIndex(reference[1]),
+      type: /\bt="([^"]*)"/.exec(attributes)?.[1] ?? "n",
+      style: Number(/\bs="(\d+)"/.exec(attributes)?.[1] ?? -1),
+      formula: /<f\b/.test(content),
+      inline: inline ? textOf(inline[1]) : null,
+      value: value ? decodeXml(value[1]) : null
+    };
+  }
+}
+function columnIndex(letters) {
+  let index = 0;
+  for (const character of letters) index = index * 26 + (character.charCodeAt(0) - 64);
+  return index;
+}
+function lastRowOfRange(ref) {
+  const end = String(ref).split(":").pop();
+  const match = /(\d+)$/.exec(end ?? "");
+  return match ? Number(match[1]) : null;
+}
+function streamPart(zip, path5, onChunk) {
+  const entry = zip.file(path5);
+  if (!entry) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const stream = entry.nodeStream("nodebuffer");
+    let buffer = "";
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      stream.destroy();
+      resolve();
+    };
+    const handle = () => {
+      const chunk = {
+        text: buffer,
+        keepFrom(position) {
+          buffer = position > 0 ? buffer.slice(position) : buffer;
+        }
+      };
+      onChunk(chunk, finish);
+    };
+    stream.on("data", (data) => {
+      if (done) return;
+      buffer += data.toString("utf8");
+      handle();
+    });
+    stream.on("end", () => {
+      if (!done) handle();
+      finish();
+    });
+    stream.on("error", (error) => {
+      if (done) return;
+      done = true;
+      reject(error);
+    });
+  });
+}
+
 // src/excel/cells.js
 function toPlainValue(raw) {
   if (raw === null || raw === void 0) return null;
@@ -66963,112 +67185,50 @@ function isReadOnlyValue(raw) {
 
 // src/excel/inspect.js
 var SAMPLE_SIZE = 200;
-async function inspectWorkbook(file, { fast = false } = {}) {
+async function inspectWorkbook(file, { full = false } = {}) {
   const rowCounts = await readRowCounts(file);
-  if (!fast) return inspectByFullRead(file, rowCounts);
+  if (full) return inspectByFullRead(file, rowCounts);
   try {
-    return await inspectByStream(file, rowCounts);
-  } catch (error) {
-    if (!isStreamLimitation(error)) throw error;
+    return await inspectByScan(file, rowCounts);
+  } catch {
     return inspectByFullRead(file, rowCounts);
   }
 }
-async function inspectByStream(file, rowCounts) {
-  const sheets = [];
-  const reader = new import_exceljs.default.stream.xlsx.WorkbookReader(file, {
-    worksheets: "emit",
-    entries: "emit",
-    sharedStrings: "cache",
-    // Die Formatvorlagen werden gebraucht: ob eine Zahl ein Datum ist, steht
-    // nicht im Wert, sondern im Zahlenformat der Zelle.
-    styles: "cache"
-  });
-  for await (const worksheet of reader) {
-    sheets.push({
-      name: worksheet.name,
-      rowCount: rowCounts.get(worksheet.name) ?? null,
-      columns: await scanSheet(worksheet)
-    });
-  }
-  if (!sheets.length) throw new StreamLimitation("kein Arbeitsblatt im Datenstrom gefunden");
-  if (sheets.some((sheet) => !sheet.name)) {
-    throw new StreamLimitation("Blattname im Datenstrom nicht lesbar");
-  }
-  const foundColumns = sheets.some((sheet) => sheet.columns.length);
-  const mayHaveData = sheets.some((sheet) => sheet.rowCount === null || sheet.rowCount > 0);
-  if (!foundColumns && mayHaveData) {
-    throw new StreamLimitation("keine Spalten im Datenstrom erkannt");
-  }
-  return sheets;
+async function inspectByScan(file, rowCounts) {
+  const sheets = await scanWorkbook(file, SAMPLE_SIZE);
+  if (!sheets.length) throw new ScanLimitation("kein Arbeitsblatt gefunden");
+  if (sheets.some((sheet) => !sheet.name)) throw new ScanLimitation("Blattname nicht lesbar");
+  const mapped = sheets.map((sheet) => ({
+    name: sheet.name,
+    rowCount: rowCounts.get(sheet.name) ?? sheet.rowCount,
+    columns: sheet.columns.map((column) => ({
+      header: column.header,
+      index: column.index,
+      kind: classifyColumn(column.header, column.values),
+      readOnly: column.readOnly,
+      note: column.readOnly ? "Formel" : null
+    }))
+  }));
+  const foundColumns = mapped.some((sheet) => sheet.columns.length);
+  const mayHaveData = mapped.some((sheet) => sheet.rowCount === null || sheet.rowCount > 0);
+  if (!foundColumns && mayHaveData) throw new ScanLimitation("keine Spalten erkannt");
+  return mapped;
 }
 async function inspectByFullRead(file, rowCounts) {
   const workbook = new import_exceljs.default.Workbook();
-  await workbook.xlsx.readFile(file);
+  try {
+    await workbook.xlsx.readFile(file);
+  } catch (error) {
+    throw new Error(`Datei konnte nicht gelesen werden: ${error.message}`);
+  }
   return workbook.worksheets.map((sheet) => ({
     name: sheet.name,
     rowCount: rowCounts.get(sheet.name) ?? Math.max(sheet.rowCount - 1, 0),
     columns: readColumns(sheet)
   }));
 }
-var StreamLimitation = class extends Error {
+var ScanLimitation = class extends Error {
 };
-function isStreamLimitation(error) {
-  return error instanceof StreamLimitation || /reading 'sheets'|Cannot read properties of undefined/.test(error?.message ?? "");
-}
-async function scanSheet(worksheet) {
-  let headers = null;
-  const samples = /* @__PURE__ */ new Map();
-  const counts = /* @__PURE__ */ new Map();
-  let dataRows = 0;
-  for await (const row of worksheet) {
-    if (row.number === 1) {
-      headers = row.values;
-      continue;
-    }
-    if (!headers) continue;
-    collectRow(row, samples, counts);
-    dataRows += 1;
-    if (dataRows >= SAMPLE_SIZE) break;
-  }
-  if (!headers) return [];
-  const columns = [];
-  headers.forEach((header, index) => {
-    if (header === null || header === void 0) return;
-    const name = String(toPlainValue(header) ?? "").trim();
-    if (!name) return;
-    const count = counts.get(index) ?? { nonEmpty: 0, readOnly: 0 };
-    columns.push({
-      header: name,
-      index,
-      kind: classifyColumn(name, samples.get(index) ?? []),
-      readOnly: count.nonEmpty > 0 && count.readOnly === count.nonEmpty,
-      note: count.nonEmpty > 0 && count.readOnly === count.nonEmpty ? "Formel" : null
-    });
-  });
-  return columns;
-}
-function collectRow(row, samples, counts) {
-  row.eachCell({ includeEmpty: false }, (cell, index) => {
-    const value = toPlainValue(cell.value);
-    if (value === null || value === "") return;
-    let count = counts.get(index);
-    if (!count) {
-      count = { nonEmpty: 0, readOnly: 0 };
-      counts.set(index, count);
-    }
-    count.nonEmpty += 1;
-    if (isReadOnlyValue(cell.value)) {
-      count.readOnly += 1;
-      return;
-    }
-    let list = samples.get(index);
-    if (!list) {
-      list = [];
-      samples.set(index, list);
-    }
-    list.push(value);
-  });
-}
 async function readRowCounts(file) {
   const counts = /* @__PURE__ */ new Map();
   try {
@@ -67083,14 +67243,14 @@ async function readRowCounts(file) {
         sheetPartPath(target),
         /<dimension\b[^>]*\bref="([^"]*)"/
       );
-      const lastRow = match ? lastRowOfRange(match[1]) : null;
+      const lastRow = match ? lastRowOfRange2(match[1]) : null;
       if (lastRow !== null) counts.set(sheet.name, Math.max(lastRow - 1, 0));
     }
   } catch {
   }
   return counts;
 }
-function lastRowOfRange(ref) {
+function lastRowOfRange2(ref) {
   const end = String(ref).split(":").pop();
   const match = /(\d+)$/.exec(end ?? "");
   return match ? Number(match[1]) : null;
@@ -73729,7 +73889,9 @@ Optionen:
   --no-consistent       Gleiche Werte muessen nicht denselben Ersatz erhalten
   --seed <zahl>         Fester Startwert - erzeugt reproduzierbare Ergebnisse
   --dry-run             Nur anzeigen, was passieren wuerde
-  --fast                --list beschleunigen (nur Excel; liest teilweise)
+  --full                --list liest die Datei vollstaendig (nur Excel).
+                        Standard ist der sparsame Weg, der auch mit sehr
+                        grossen Dateien zurechtkommt.
   --password <wort>     Kennwort der Access-Datenbank
   -h, --help            Diese Hilfe
 
@@ -73758,7 +73920,7 @@ var OPTIONS = {
   consistent: { type: "boolean", default: true },
   seed: { type: "string" },
   "dry-run": { type: "boolean", default: false },
-  fast: { type: "boolean", default: false },
+  full: { type: "boolean", default: false },
   help: { type: "boolean", short: "h", default: false }
 };
 async function main() {
@@ -73800,7 +73962,7 @@ ${USAGE}`);
   printReport(report, values["dry-run"]);
 }
 async function printStructure(engine, file, values) {
-  const sheets = engine === "access" ? await inspectDatabase(file, { password: values.password }) : await inspectWorkbook(file, { fast: values.fast });
+  const sheets = engine === "access" ? await inspectDatabase(file, { password: values.password }) : await inspectWorkbook(file, { full: values.full });
   const label = engine === "access" ? "Tabelle" : "Arbeitsblatt";
   for (const sheet of sheets) {
     const rows = sheet.rowCount === null ? "Zeilenzahl unbekannt" : `${sheet.rowCount} Datenzeilen`;

@@ -58,7 +58,9 @@ Optionen:
   --no-consistent       Gleiche Werte muessen nicht denselben Ersatz erhalten
   --seed <zahl>         Fester Startwert - erzeugt reproduzierbare Ergebnisse
   --dry-run             Nur anzeigen, was passieren wuerde
-  --fast                --list beschleunigen (nur Excel; liest teilweise)
+  --full                --list liest die Datei vollstaendig (nur Excel).
+                        Standard ist der sparsame Weg, der auch mit sehr
+                        grossen Dateien zurechtkommt.
   --password <wort>     Kennwort der Access-Datenbank
   -h, --help            Diese Hilfe
 
@@ -88,7 +90,7 @@ const OPTIONS = {
   consistent: { type: 'boolean', default: true },
   seed: { type: 'string' },
   'dry-run': { type: 'boolean', default: false },
-  fast: { type: 'boolean', default: false },
+  full: { type: 'boolean', default: false },
   help: { type: 'boolean', short: 'h', default: false },
 };
 
@@ -145,7 +147,7 @@ async function main() {
 async function printStructure(engine, file, values) {
   const sheets = engine === 'access'
     ? await inspectDatabase(file, { password: values.password })
-    : await inspectWorkbook(file, { fast: values.fast });
+    : await inspectWorkbook(file, { full: values.full });
 
   const label = engine === 'access' ? 'Tabelle' : 'Arbeitsblatt';
 

@@ -14,6 +14,7 @@
 import ExcelJS from 'exceljs';
 
 import { classifyColumn } from '../core/classify.js';
+import { scanWorkbook } from './scan.js';
 import { toPlainValue, isReadOnlyValue } from './cells.js';
 import {
   openWorkbookZip, readText, findInPartHead, listSheets, resolveRelationship, sheetPartPath,
@@ -29,68 +30,67 @@ export const SAMPLE_SIZE = 200;
  * @param {string} file Pfad zur .xlsx/.xlsm-Datei.
  * @returns {Promise<Array<{name: string, rowCount: number|null, columns: Array}>>}
  */
-export async function inspectWorkbook(file, { fast = false } = {}) {
+export async function inspectWorkbook(file, { full = false } = {}) {
   const rowCounts = await readRowCounts(file);
 
-  // Standard ist der vollstaendige, belastbare Weg. Der Datenstrom-Leser ist
-  // um ein Vielfaches schneller, hat sich aber an einer echten Arbeitsmappe als
-  // unzuverlaessig erwiesen (leere Anzeige), solange die Ursache nicht geklaert
-  // ist. Er laesst sich mit --fast anfordern.
-  if (!fast) return inspectByFullRead(file, rowCounts);
+  // Standard ist der eigene, sparsame Leser: er kommt mit beliebig grossen
+  // Dateien zurecht, weil er nur die ersten Zeilen liest. Der vollstaendige
+  // Weg laedt jede Zelle in den Speicher und scheitert an grossen Dateien -
+  // er bleibt als Rueckfall und laesst sich mit --full erzwingen.
+  if (full) return inspectByFullRead(file, rowCounts);
 
   try {
-    return await inspectByStream(file, rowCounts);
-  } catch (error) {
-    // Der Datenstrom-Leser von exceljs kommt mit unkomprimiert abgelegten
-    // Archiveintraegen nicht zurecht (er scheitert dann beim Aufloesen der
-    // Blattliste). Solche Dateien gibt es, deshalb der langsamere, aber
-    // belastbare Weg als Rueckfall - ein Absturz waere die schlechteste
-    // Antwort auf eine lesbare Datei.
-    if (!isStreamLimitation(error)) throw error;
+    return await inspectByScan(file, rowCounts);
+  } catch {
+    // Jeder Fehler des sparsamen Wegs fuehrt zum vollstaendigen Einlesen: er
+    // ist eine Beschleunigung, keine Bedingung. Eine leere Anzeige oder ein
+    // Abbruch waeren die schlechteste Antwort auf eine lesbare Datei - lieber
+    // langsam und richtig. Scheitert auch der vollstaendige Weg, meldet
+    // dessen Fehler das eigentliche Problem.
     return inspectByFullRead(file, rowCounts);
   }
 }
 
-async function inspectByStream(file, rowCounts) {
-  const sheets = [];
-  const reader = new ExcelJS.stream.xlsx.WorkbookReader(file, {
-    worksheets: 'emit',
-    entries: 'emit',
-    sharedStrings: 'cache',
-    // Die Formatvorlagen werden gebraucht: ob eine Zahl ein Datum ist, steht
-    // nicht im Wert, sondern im Zahlenformat der Zelle.
-    styles: 'cache',
-  });
+/**
+ * Sparsamer Weg: liest nur Kopfzeile und die ersten Zeilen je Blatt.
+ * Liefert er nichts Brauchbares, wird der Fehler gemeldet und der Aufrufer
+ * faellt auf das vollstaendige Einlesen zurueck - eine leere Anzeige waere
+ * die schlechteste Antwort auf eine lesbare Datei.
+ */
+async function inspectByScan(file, rowCounts) {
+  const sheets = await scanWorkbook(file, SAMPLE_SIZE);
 
-  for await (const worksheet of reader) {
-    sheets.push({
-      name: worksheet.name,
-      rowCount: rowCounts.get(worksheet.name) ?? null,
-      columns: await scanSheet(worksheet),
-    });
-  }
+  if (!sheets.length) throw new ScanLimitation('kein Arbeitsblatt gefunden');
+  if (sheets.some((sheet) => !sheet.name)) throw new ScanLimitation('Blattname nicht lesbar');
 
-  // Der schnelle Weg darf nie zu einer leeren Anzeige fuehren. Liefert er kein
-  // Blatt, keinen Namen oder nirgends eine Spalte, obwohl die Datei Daten
-  // enthaelt, wird vollstaendig gelesen - lieber langsam und richtig.
-  if (!sheets.length) throw new StreamLimitation('kein Arbeitsblatt im Datenstrom gefunden');
-  if (sheets.some((sheet) => !sheet.name)) {
-    throw new StreamLimitation('Blattname im Datenstrom nicht lesbar');
-  }
+  const mapped = sheets.map((sheet) => ({
+    name: sheet.name,
+    rowCount: rowCounts.get(sheet.name) ?? sheet.rowCount,
+    columns: sheet.columns.map((column) => ({
+      header: column.header,
+      index: column.index,
+      kind: classifyColumn(column.header, column.values),
+      readOnly: column.readOnly,
+      note: column.readOnly ? 'Formel' : null,
+    })),
+  }));
 
-  const foundColumns = sheets.some((sheet) => sheet.columns.length);
-  const mayHaveData = sheets.some((sheet) => sheet.rowCount === null || sheet.rowCount > 0);
-  if (!foundColumns && mayHaveData) {
-    throw new StreamLimitation('keine Spalten im Datenstrom erkannt');
-  }
+  const foundColumns = mapped.some((sheet) => sheet.columns.length);
+  const mayHaveData = mapped.some((sheet) => sheet.rowCount === null || sheet.rowCount > 0);
+  if (!foundColumns && mayHaveData) throw new ScanLimitation('keine Spalten erkannt');
 
-  return sheets;
+  return mapped;
 }
+
 
 /** Belastbarer Rueckfall: liest die Datei vollstaendig ein. */
 async function inspectByFullRead(file, rowCounts) {
   const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.readFile(file);
+  try {
+    await workbook.xlsx.readFile(file);
+  } catch (error) {
+    throw new Error(`Datei konnte nicht gelesen werden: ${error.message}`);
+  }
 
   return workbook.worksheets.map((sheet) => ({
     name: sheet.name,
@@ -99,82 +99,10 @@ async function inspectByFullRead(file, rowCounts) {
   }));
 }
 
-class StreamLimitation extends Error {}
+/** Signalisiert, dass der sparsame Weg nichts Brauchbares geliefert hat. */
+class ScanLimitation extends Error {}
 
-function isStreamLimitation(error) {
-  return error instanceof StreamLimitation
-    || /reading 'sheets'|Cannot read properties of undefined/.test(error?.message ?? '');
-}
 
-/**
- * Liest Kopfzeile und Beispielwerte eines Blattes aus dem Datenstrom und
- * bricht ab, sobald genug Zeilen gesehen wurden.
- */
-async function scanSheet(worksheet) {
-  let headers = null;
-  const samples = new Map();
-  const counts = new Map();
-  let dataRows = 0;
-
-  for await (const row of worksheet) {
-    if (row.number === 1) {
-      headers = row.values;
-      continue;
-    }
-    if (!headers) continue;
-
-    collectRow(row, samples, counts);
-    dataRows += 1;
-    if (dataRows >= SAMPLE_SIZE) break;
-  }
-
-  if (!headers) return [];
-
-  const columns = [];
-  headers.forEach((header, index) => {
-    if (header === null || header === undefined) return;
-    const name = String(toPlainValue(header) ?? '').trim();
-    if (!name) return;
-
-    const count = counts.get(index) ?? { nonEmpty: 0, readOnly: 0 };
-    columns.push({
-      header: name,
-      index,
-      kind: classifyColumn(name, samples.get(index) ?? []),
-      readOnly: count.nonEmpty > 0 && count.readOnly === count.nonEmpty,
-      note: count.nonEmpty > 0 && count.readOnly === count.nonEmpty ? 'Formel' : null,
-    });
-  });
-
-  return columns;
-}
-
-/** Verteilt die Werte einer Zeile auf die Sammelbehaelter der Spalten. */
-function collectRow(row, samples, counts) {
-  row.eachCell({ includeEmpty: false }, (cell, index) => {
-    const value = toPlainValue(cell.value);
-    if (value === null || value === '') return;
-
-    let count = counts.get(index);
-    if (!count) {
-      count = { nonEmpty: 0, readOnly: 0 };
-      counts.set(index, count);
-    }
-    count.nonEmpty += 1;
-
-    if (isReadOnlyValue(cell.value)) {
-      count.readOnly += 1;
-      return;
-    }
-
-    let list = samples.get(index);
-    if (!list) {
-      list = [];
-      samples.set(index, list);
-    }
-    list.push(value);
-  });
-}
 
 /**
  * Liest die Zeilenzahl jedes Blattes aus dessen `dimension`-Eintrag.
