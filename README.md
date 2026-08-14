@@ -29,8 +29,9 @@ Die wichtigsten Eigenschaften, kurz und prüfbar:
 ### Ausführung ohne gelockerte Richtlinie
 
 Es gibt **kein** `.ps1` und damit auch keine PowerShell-Ausführungsrichtlinie,
-die umgangen werden müsste. `-ExecutionPolicy Bypass` kommt an keiner Stelle
-vor. Gestartet wird eine Batchdatei, die `node.exe` mit einer JavaScript-Datei
+die umgangen werden müsste. Das Projekt enthält an keiner Stelle einen Aufruf,
+der eine Ausführungsrichtlinie lockert – weder in der Anleitung noch im Code.
+Gestartet wird eine Batchdatei, die `node.exe` mit einer JavaScript-Datei
 aufruft:
 
 ```
