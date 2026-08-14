@@ -1,0 +1,31 @@
+{
+  "name": "dekaprojekt-anonymizer",
+  "version": "1.0.0",
+  "description": "Anonymisiert personenbezogene Daten in Excel-Dateien (.xlsx/.xlsm) - ohne installiertes Excel",
+  "type": "module",
+  "bin": {
+    "anonymize-xlsx": "src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/cli.js",
+    "build": "esbuild src/cli.js --bundle --platform=node --target=node20 --format=cjs --outfile=dist/anonymize-xlsx.cjs",
+    "test": "node --test test/*.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PG38Winner/DekaProjektScript.git"
+  },
+  "license": "ISC",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@faker-js/faker": "^10.5.0",
+    "exceljs": "^4.4.0",
+    "jszip": "^3.10.1",
+    "mdb-reader": "^3.2.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

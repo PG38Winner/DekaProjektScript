@@ -1,0 +1,7 @@
+# Nur die Abhaengigkeiten des Projekts ignorieren - der fuehrende Schraegstrich
+# begrenzt die Regel auf das Wurzelverzeichnis. Ohne ihn wuerde auch das
+# node_modules der mitgelieferten Node.js-Laufzeit erfasst, in dem npm liegt.
+/node_modules/
+
+*.backup-*.xlsx
+tmp/
