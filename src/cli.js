@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Kommandozeilen-Oberflaeche des Excel-Anonymisierers.
+ * Kommandozeilen-Oberflaeche des Daten-Maskierers.
  *
  *   node src/cli.js daten.xlsx --list
- *   node src/cli.js daten.xlsx --keep "KundenID,Bestellnummer"
- *   node src/cli.js daten.xlsx --sheet Kunden --out anonym.xlsx --no-backup
+ *   node src/cli.js daten.xlsx --keep "Kunden:KundenID"
+ *   node src/cli.js daten.accdb --dry-run
  */
 
 import { parseArgs } from 'node:util';
@@ -12,6 +12,9 @@ import path from 'node:path';
 
 import { anonymizeWorkbook, inspectWorkbook } from './excel/anonymize.js';
 import { anonymizeDatabase, inspectDatabase } from './access/anonymize.js';
+
+/** Fassung; bei jeder Freigabe zusammen mit package.json anheben. */
+const VERSION = '1.0.0';
 
 /** Waehlt die Engine anhand der Dateiendung. */
 const ENGINES = {
@@ -31,9 +34,13 @@ function engineFor(file) {
 }
 
 const USAGE = `
-Daten-Anonymisierer - verschleiert personenbezogene Daten
+Daten-Maskierer - ersetzt personenbezogene Daten durch erfundene Werte
 in Excel-Dateien (.xlsx/.xlsm) und Access-Datenbanken (.accdb/.mdb).
 Die Engine wird an der Dateiendung erkannt.
+
+WICHTIG: Das Ergebnis ist eine MASKIERUNG, keine zertifizierte Anonymisierung.
+Ob sie fuer den jeweiligen Zweck ausreicht, muss fachlich beurteilt werden -
+siehe Abschnitt "Grenzen der Maskierung" in der README.
 
 Aufruf:
   anonymisieren <datei> [optionen]
@@ -53,10 +60,11 @@ Optionen:
                           --keep "*:ID"              wieder fuer jedes Blatt
                         Mehrfach angebbar; jede Angabe beginnt neu:
                           --keep "Kunden:ID,Name" --keep "Artikel:Nr"
-  --out <datei>         Zieldatei. Bei Excel statt Ueberschreiben; bei Access
-                        die zu schreibende Arbeitsmappe (Standard:
-                        <datenbank>.anonymisiert.xlsx)
-  --no-backup           Keine Sicherungskopie anlegen
+  --out <datei>         Zieldatei. Standard: <name>.anonymisiert.<endung>
+                        neben der Quelldatei.
+  --in-place            Die Quelldatei SELBST ueberschreiben (nur Excel).
+                        Eine Sicherungskopie wird dabei immer angelegt und
+                        laesst sich nicht abschalten.
   --no-consistent       Gleiche Werte muessen nicht denselben Ersatz erhalten
   --seed <zahl>         Fester Startwert - erzeugt reproduzierbare Ergebnisse
   --dry-run             Nur anzeigen, was passieren wuerde
@@ -64,14 +72,13 @@ Optionen:
                         Standard ist der sparsame Weg, der auch mit sehr
                         grossen Dateien zurechtkommt.
   --password <wort>     Kennwort der Access-Datenbank
+  --version             Fassung und Pruefsumme ausgeben
   -h, --help            Diese Hilfe
 
 Access:
-  Laeuft vollstaendig in Node.js, auf jedem System und ohne Zusatzsoftware.
-  Das Ergebnis wird als Excel-Arbeitsmappe geschrieben, je Tabelle ein Blatt -
-  die Datenbank selbst bleibt unveraendert. In eine .accdb zurueckzuschreiben
-  kann nur die Microsoft Access Database Engine; aus reinem JavaScript geht
-  das nicht.
+  Die Datenbank wird ausschliesslich GELESEN. Das Ergebnis wird als
+  Excel-Arbeitsmappe geschrieben, je Tabelle ein Blatt. Es gibt keinen Weg,
+  in dem die .accdb veraendert wuerde.
   Schluessel- und Verknuepfungsspalten werden erkannt und bleiben stehen.
 
 Merksatz:
@@ -82,6 +89,7 @@ Beispiele:
   anonymisieren daten.xlsx --keep "Kunden:KundenID,Nachname" --keep "Artikel:Nr"
   anonymisieren daten.accdb --dry-run
   anonymisieren daten.accdb --keep "Kunden:Kundennummer" --out anonym.xlsx
+  anonymisieren daten.xlsx --in-place        (ueberschreibt, legt Sicherung an)
 `.trim();
 
 const OPTIONS = {
@@ -89,9 +97,10 @@ const OPTIONS = {
   sheet: { type: 'string' },
   table: { type: 'string' },
   password: { type: 'string' },
+  'in-place': { type: 'boolean', default: false },
+  version: { type: 'boolean', default: false },
   keep: { type: 'string', multiple: true },
   out: { type: 'string' },
-  backup: { type: 'boolean', default: true },
   consistent: { type: 'boolean', default: true },
   seed: { type: 'string' },
   'dry-run': { type: 'boolean', default: false },
@@ -108,6 +117,11 @@ async function main() {
   }
 
   const { values, positionals } = parsed;
+
+  if (values.version) {
+    await printVersion();
+    return;
+  }
 
   if (values.help || positionals.length === 0) {
     console.log(USAGE);
@@ -132,11 +146,17 @@ async function main() {
   // innerhalb einer Angabe fuer die folgenden Spalten weitergilt.
   const keep = values.keep ?? [];
 
+  if (values['in-place'] && engine === 'access') {
+    fail('--in-place gibt es fuer Access nicht: die Datenbank wird nur gelesen.');
+  }
+
+  // Standard ist die neue Datei. Die Quelldatei wird nur auf ausdrueckliche
+  // Anweisung ueberschrieben - und dann immer mit Sicherungskopie.
   const common = {
     file,
     keep,
-    out: values.out,
-    backup: values.backup,
+    out: values['in-place'] ? undefined : (values.out ?? defaultTarget(file)),
+    backup: true,
     dryRun: values['dry-run'],
     consistent: values.consistent,
     seed,
@@ -194,7 +214,9 @@ function printReport(report, dryRun) {
     }
   }
 
-  console.log(`\n  Geaenderte Zellen gesamt: ${report.changed}`);
+  printUnchanged(report, label);
+
+  console.log(`\n  Maskierte Zellen gesamt:  ${report.changed}`);
   if (report.backup) console.log(`  Sicherungskopie:          ${report.backup}`);
   if (report.macrosPreserved) console.log('  Makros:                   uebernommen');
   if (report.output) console.log(`  Geschrieben:              ${report.output}`);
@@ -203,8 +225,74 @@ function printReport(report, dryRun) {
     console.warn(`\n  WARNUNG: ${warning}`);
   }
 
+  console.log(
+    '\n  HINWEIS: Dies ist eine Maskierung, keine zertifizierte Anonymisierung.'
+    + '\n  Freitextfelder koennen personenbezogene Angaben enthalten, die nicht als'
+    + '\n  solche erkannt werden, und Kombinationen aus Datum, Ort, Betrag oder'
+    + '\n  seltenen Merkmalen koennen eine Re-Identifikation ermoeglichen.',
+  );
+
   if (dryRun) console.log('\n  --dry-run: Es wurde nichts geschrieben.');
   console.log('');
+}
+
+/**
+ * Listet auf, was NICHT maskiert wurde.
+ *
+ * Der haeufigste Bedienfehler ist die Verwechslung der Richtung: --keep nimmt
+ * Spalten von der Maskierung AUS. Wer das umgekehrt versteht, laesst genau die
+ * personenbezogenen Spalten stehen. Deshalb stehen sie am Ende noch einmal
+ * ausdruecklich beisammen.
+ */
+function printUnchanged(report, label) {
+  const untouched = report.sheets
+    .filter((sheet) => !sheet.skipped)
+    .map((sheet) => ({
+      name: sheet.name,
+      columns: sheet.columns
+        .filter((column) => column.status.startsWith('unveraendert'))
+        .map((column) => column.header),
+    }))
+    .filter((sheet) => sheet.columns.length);
+
+  if (!untouched.length) return;
+
+  console.log('\n  ACHTUNG - diese Spalten enthalten weiterhin die Originaldaten:');
+  for (const sheet of untouched) {
+    console.log(`    ${label} ${sheet.name}: ${sheet.columns.join(', ')}`);
+  }
+  console.log('    Bitte pruefen, dass darin keine personenbezogenen Angaben stehen.');
+}
+
+/**
+ * Gibt Fassung und Pruefsumme der laufenden Datei aus. Damit laesst sich
+ * festhalten, welcher Stand freigegeben wurde und ob spaeter derselbe laeuft.
+ */
+async function printVersion() {
+  const { createHash } = await import('node:crypto');
+  const { readFile } = await import('node:fs/promises');
+  const running = process.argv[1];
+
+  console.log(`Daten-Maskierer ${VERSION}`);
+  console.log(`Node.js         ${process.version}`);
+
+  try {
+    const hash = createHash('sha256').update(await readFile(running)).digest('hex');
+    console.log(`Datei           ${running}`);
+    console.log(`SHA-256         ${hash}`);
+  } catch {
+    console.log(`Datei           ${running} (Pruefsumme nicht ermittelbar)`);
+  }
+}
+
+/** "kunden.xlsx" -> "kunden.anonymisiert.xlsx" (Endung bleibt, wegen Makros). */
+function defaultTarget(file) {
+  const resolved = path.resolve(file);
+  const extension = path.extname(resolved);
+  return path.join(
+    path.dirname(resolved),
+    `${path.basename(resolved, extension)}.anonymisiert${extension}`,
+  );
 }
 
 function parseSeed(raw) {

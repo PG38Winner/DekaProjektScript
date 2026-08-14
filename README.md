@@ -1,7 +1,7 @@
-# Daten-Anonymisierer
+# Daten-Maskierer
 
-Kommandozeilen-Werkzeug zum **Verschleiern (Anonymisieren) personenbezogener
-Daten** in
+Kommandozeilen-Werkzeug zum **Ersetzen personenbezogener Daten durch erfundene
+Werte** („Maskierung") in
 
 - **Excel-Dateien** (`.xlsx` / `.xlsm`) und
 - **Access-Datenbanken** (`.accdb` / `.mdb`).
@@ -11,6 +11,59 @@ Die Engine wird an der Dateiendung erkannt.
 Alles läuft **vollständig in Node.js**, ohne Fremdprozesse und ohne
 Zusatzsoftware: kein installiertes Microsoft Excel, kein Access, kein
 ACE-OLEDB, kein PowerShell. Damit läuft es unter Windows, Linux und macOS.
+
+## Für die IT-Freigabe
+
+Die wichtigsten Eigenschaften, kurz und prüfbar:
+
+| Frage | Antwort | Nachprüfbar mit |
+|-------|---------|-----------------|
+| PowerShell, VBScript, Makros? | **Nein.** Kein Skript-Interpreter, kein Kindprozess | `findstr /S /I powershell src\*` – keine Treffer |
+| Netzwerkzugriff zur Laufzeit? | **Nein.** Kein `http`/`net`/`dns`/`tls` im Code oder Bündel | `findstr /C:"require(\"https\")" dist\anonymize-xlsx.cjs` |
+| Administratorrechte? | **Nein.** Keine Installation, keine Registry, kein Dienst | – |
+| Zusatzsoftware? | **Nein.** Kein Excel, kein Access, kein ACE-OLEDB | – |
+| Laufzeit | `node.exe` v24.19.0, **Authenticode-signiert** (Microsoft-Zertifikatskette) | `Get-AuthenticodeSignature node-v24.19.0-win-x64\node.exe` |
+| Ausgabe | nur Blatt-/Spaltennamen und Anzahlen – **keine Zellinhalte** | Bericht ansehen |
+| Fassung festhalten | `anonymisieren.cmd --version` nennt Fassung und SHA-256 | siehe unten |
+
+### Ausführung ohne gelockerte Richtlinie
+
+Es gibt **kein** `.ps1` und damit auch keine PowerShell-Ausführungsrichtlinie,
+die umgangen werden müsste. `-ExecutionPolicy Bypass` kommt an keiner Stelle
+vor. Gestartet wird eine Batchdatei, die `node.exe` mit einer JavaScript-Datei
+aufruft:
+
+```
+anonymisieren.cmd "C:\Daten\kunden.xlsx" --list
+```
+
+### Herkunft festhalten
+
+```
+anonymisieren.cmd --version
+```
+
+gibt Fassung, Node-Version und die **SHA-256-Prüfsumme der ausgeführten Datei**
+aus. Damit lässt sich festhalten, welcher Stand freigegeben wurde, und später
+prüfen, ob derselbe läuft. Für die Freigabe empfiehlt sich, das Repository
+einmalig in einen internen, freigegebenen Ablageort zu kopieren und von dort
+zu betreiben – nicht bei jedem Lauf neu von GitHub zu laden.
+
+### Datei aus dem Internet („Mark of the Web")
+
+Wird das ZIP von GitHub heruntergeladen, markiert Windows die enthaltenen
+Dateien als aus dem Internet stammend. Der saubere Weg: **vor** dem Entpacken
+im Explorer *Rechtsklick auf die ZIP-Datei → Eigenschaften → Zulassen* setzen,
+dann entpacken. Das ist eine bewusste Einzelfreigabe durch den Benutzer und
+umgeht keine Richtlinie.
+
+### Was das Werkzeug an Dateien anfasst
+
+| Dateityp | Zugriff |
+|----------|---------|
+| Access `.accdb`/`.mdb` | **nur lesen** – es gibt keinen Codepfad, der schreibt |
+| Excel `.xlsx`/`.xlsm` | liest die Quelldatei, schreibt standardmäßig eine **neue** Datei |
+| Excel mit `--in-place` | überschreibt die Quelldatei; Sicherungskopie ist dabei **verpflichtend** und nicht abschaltbar |
 
 ## Einrichten
 
@@ -80,8 +133,9 @@ node src/cli.js daten.xlsx --sheet Kunden --out anonym.xlsx --seed 42
 | `--list` | Blätter, Spalten und erkannte Inhaltsart anzeigen |
 | `--sheet <name>` | nur dieses Arbeitsblatt (Standard: **alle** Blätter) |
 | `--keep <angabe>` | Spalten, die **unverändert** bleiben – siehe unten |
-| `--out <datei>` | Zieldatei: bei Excel statt Überschreiben, bei Access die zu schreibende Arbeitsmappe |
-| `--no-backup` | Keine Sicherungskopie anlegen (nur Excel; bei Access bleibt das Original ohnehin unberührt) |
+| `--out <datei>` | Zieldatei; Standard: `<name>.anonymisiert.<endung>` neben der Quelldatei |
+| `--in-place` | Quelldatei überschreiben (nur Excel); Sicherungskopie ist dabei Pflicht |
+| `--version` | Fassung und SHA-256-Prüfsumme ausgeben |
 | `--no-consistent` | Gleiche Werte dürfen unterschiedliche Ersatzwerte erhalten |
 | `--seed <zahl>` | Fester Startwert für reproduzierbare Läufe |
 | `--dry-run` | Nur anzeigen, was passieren würde |
@@ -204,7 +258,7 @@ Arbeitsblatt: Kunden
   Ort          unveraendert     city
 ```
 
-## Art der Anonymisierung
+## Art der Maskierung
 
 Die Ersetzung erfolgt typ- und inhaltsabhängig. Die Inhaltsart wird aus dem
 **Spaltennamen** und dem **Zelleninhalt** abgeleitet:
@@ -243,6 +297,43 @@ Mit `--no-consistent` erhält jede Zelle einen eigenen Zufallswert.
 
 Mit `--seed <zahl>` wird derselbe Lauf reproduzierbar – nützlich für Tests.
 Ohne Seed ist jeder Lauf anders.
+
+## Grenzen der Maskierung
+
+**Dies ist eine Maskierung, keine zertifizierte Anonymisierung.** Ob das
+Ergebnis den Anforderungen des Datenschutzes genügt, ist eine fachliche
+Entscheidung und muss im Einzelfall beurteilt werden. Das Werkzeug kann sie
+nicht treffen und behauptet es auch nicht.
+
+Konkret bleiben diese Risiken bestehen:
+
+- **Freitextfelder.** Eine Bemerkungsspalte wird durch Fülltext ersetzt, aber
+  wenn personenbezogene Angaben in einer Spalte stehen, die als „unverändert"
+  gewählt wurde, bleiben sie erhalten. Das Werkzeug versteht keinen Inhalt.
+- **Re-Identifikation durch Kombination.** Datum, Ort, Betrag und seltene
+  Merkmale können zusammen auf eine Person zurückführen, auch wenn Name und
+  Adresse ersetzt sind. Ein einzelner Wohnort mit einem einzigen Datensatz
+  bleibt erkennbar.
+- **Schlüssel und Verknüpfungen.** Sie bleiben absichtlich stehen, damit die
+  Daten auswertbar bleiben. Lässt sich über eine ID auf ein anderes System
+  schließen, ist die Person weiterhin bestimmbar.
+- **Falsch gesetzte `--keep`-Angaben.** Wer die Richtung verwechselt, lässt
+  genau die personenbezogenen Spalten stehen. Deshalb nennt der Bericht am
+  Ende **ausdrücklich alle Spalten, die unverändert geblieben sind**:
+
+```
+  ACHTUNG - diese Spalten enthalten weiterhin die Originaldaten:
+    Arbeitsblatt Kunden: KundenID, Nachname
+    Bitte pruefen, dass darin keine personenbezogenen Angaben stehen.
+```
+
+- **Gleiche Werte, gleicher Ersatz.** Die konsistente Ersetzung erhält
+  Häufigkeiten: Kommt ein Name 500-mal vor, kommt der Ersatz 500-mal vor. Das
+  ist für Auswertungen gewollt, verrät aber die Verteilung. Mit
+  `--no-consistent` entfällt das, dann zerfallen allerdings die Verknüpfungen.
+
+**Empfohlenes Vorgehen:** erst `--list`, dann `--dry-run`, den Bericht mit dem
+Fachbereich durchgehen, und erst dann den echten Lauf – immer auf einer Kopie.
 
 ## Access-Datenbanken (`.accdb` / `.mdb`)
 
