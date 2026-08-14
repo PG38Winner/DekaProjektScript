@@ -54,8 +54,8 @@ describe('Eigenstaendiges Buendel (dist/)', { skip: !bundleExists && 'dist/ nich
     await createFixture(fromSource);
     await createFixture(fromBundle);
 
-    await run(process.execPath, [SOURCE, fromSource, '--seed', '99', '--in-place']);
-    await run(process.execPath, [BUNDLE, fromBundle, '--seed', '99', '--in-place']);
+    await run(process.execPath, [SOURCE, fromSource, '--seed', '99', '--in-place', '--yes']);
+    await run(process.execPath, [BUNDLE, fromBundle, '--seed', '99', '--in-place', '--yes']);
 
     assert.deepEqual(
       fingerprint(await readSheet(fromBundle)),
@@ -75,7 +75,7 @@ describe('Eigenstaendiges Buendel (dist/)', { skip: !bundleExists && 'dist/ nich
     await copyFile(BUNDLE, copiedBundle);
     await createFixture(data);
 
-    const { stdout } = await run(process.execPath, [copiedBundle, data, '--seed', '1', '--in-place'], {
+    const { stdout } = await run(process.execPath, [copiedBundle, data, '--seed', '1', '--in-place', '--yes'], {
       cwd: isolated,
     });
 
@@ -104,7 +104,7 @@ describe('Eigenstaendiges Buendel (dist/)', { skip: !bundleExists && 'dist/ nich
     const file = path.join(workdir, 'makro.xlsm');
     await createMacroFixture(file);
 
-    const { stdout } = await run(process.execPath, [BUNDLE, file, '--seed', '1', '--in-place']);
+    const { stdout } = await run(process.execPath, [BUNDLE, file, '--seed', '1', '--in-place', '--yes']);
     assert.match(stdout, /Makros:\s+uebernommen/);
 
     const state = await readMacroState(file);

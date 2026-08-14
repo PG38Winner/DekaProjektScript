@@ -63,7 +63,7 @@ umgeht keine Richtlinie.
 |----------|---------|
 | Access `.accdb`/`.mdb` | **nur lesen** – es gibt keinen Codepfad, der schreibt |
 | Excel `.xlsx`/`.xlsm` | liest die Quelldatei, schreibt standardmäßig eine **neue** Datei |
-| Excel mit `--in-place` | überschreibt die Quelldatei; Sicherungskopie ist dabei **verpflichtend** und nicht abschaltbar |
+| Excel mit `--in-place` | überschreibt die Quelldatei; zeigt vorher den vollständigen Bericht, verlangt die Eingabe von `JA`, Sicherungskopie ist **verpflichtend** und nicht abschaltbar |
 
 ## Einrichten
 
@@ -134,7 +134,8 @@ node src/cli.js daten.xlsx --sheet Kunden --out anonym.xlsx --seed 42
 | `--sheet <name>` | nur dieses Arbeitsblatt (Standard: **alle** Blätter) |
 | `--keep <angabe>` | Spalten, die **unverändert** bleiben – siehe unten |
 | `--out <datei>` | Zieldatei; Standard: `<name>.anonymisiert.<endung>` neben der Quelldatei |
-| `--in-place` | Quelldatei überschreiben (nur Excel); Sicherungskopie ist dabei Pflicht |
+| `--in-place` | Quelldatei überschreiben (nur Excel); zeigt vorher den Bericht, verlangt Bestätigung, Sicherungskopie ist Pflicht |
+| `--yes` | Bestätigung zu `--in-place` vorab erteilen (Aufruf ohne Terminal) |
 | `--version` | Fassung und SHA-256-Prüfsumme ausgeben |
 | `--no-consistent` | Gleiche Werte dürfen unterschiedliche Ersatzwerte erhalten |
 | `--seed <zahl>` | Fester Startwert für reproduzierbare Läufe |

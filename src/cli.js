@@ -63,8 +63,11 @@ Optionen:
   --out <datei>         Zieldatei. Standard: <name>.anonymisiert.<endung>
                         neben der Quelldatei.
   --in-place            Die Quelldatei SELBST ueberschreiben (nur Excel).
-                        Eine Sicherungskopie wird dabei immer angelegt und
-                        laesst sich nicht abschalten.
+                        Zeigt vorher, was geaendert wuerde, und verlangt eine
+                        ausdrueckliche Bestaetigung. Eine Sicherungskopie wird
+                        immer angelegt und laesst sich nicht abschalten.
+  --yes                 Bestaetigung zu --in-place vorab erteilen (fuer
+                        Aufrufe ohne Terminal)
   --no-consistent       Gleiche Werte muessen nicht denselben Ersatz erhalten
   --seed <zahl>         Fester Startwert - erzeugt reproduzierbare Ergebnisse
   --dry-run             Nur anzeigen, was passieren wuerde
@@ -98,6 +101,7 @@ const OPTIONS = {
   table: { type: 'string' },
   password: { type: 'string' },
   'in-place': { type: 'boolean', default: false },
+  yes: { type: 'boolean', default: false },
   version: { type: 'boolean', default: false },
   keep: { type: 'string', multiple: true },
   out: { type: 'string' },
@@ -162,11 +166,53 @@ async function main() {
     seed,
   };
 
-  const report = engine === 'access'
-    ? await anonymizeDatabase({ ...common, table: section, password: values.password })
-    : await anonymizeWorkbook({ ...common, sheet: section });
+  const run = (options) => (engine === 'access'
+    ? anonymizeDatabase({ ...options, table: section, password: values.password })
+    : anonymizeWorkbook({ ...options, sheet: section }));
 
-  printReport(report, values['dry-run']);
+  // Vor dem Ueberschreiben der Quelldatei: erst zeigen, was passieren wuerde,
+  // dann ausdruecklich bestaetigen lassen. Ein unbeabsichtigter Lauf auf einer
+  // Produktivdatei laesst sich sonst nicht mehr rueckgaengig machen.
+  if (values['in-place'] && !values['dry-run']) {
+    printReport(await run({ ...common, dryRun: true }), true);
+    await confirmOverwrite(file, values.yes);
+  }
+
+  printReport(await run(common), values['dry-run']);
+}
+
+/**
+ * Verlangt eine ausdrueckliche Bestaetigung. Ohne Terminal (Aufruf aus einem
+ * Skript) muss --yes angegeben werden - stillschweigend ueberschrieben wird
+ * nie.
+ */
+async function confirmOverwrite(file, alreadyConfirmed) {
+  if (alreadyConfirmed) return;
+
+  if (!process.stdin.isTTY) {
+    fail(
+      `"${path.basename(file)}" soll ueberschrieben werden, es ist aber keine Eingabe moeglich.\n`
+      + 'Bei einem Aufruf ohne Terminal die Bestaetigung mit --yes angeben.',
+    );
+  }
+
+  const { createInterface } = await import('node:readline/promises');
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+
+  console.log(
+    `\n  Die Datei "${path.basename(file)}" wird UEBERSCHRIEBEN.`
+    + '\n  Eine Sicherungskopie wird daneben angelegt.'
+    + '\n  Bitte bestaetigen, dass die oben als unveraendert genannten Spalten'
+    + '\n  keine personenbezogenen Daten enthalten.',
+  );
+
+  const answer = await rl.question('\n  Zum Fortfahren JA eingeben: ');
+  rl.close();
+
+  if (answer.trim().toUpperCase() !== 'JA') {
+    console.log('\n  Abgebrochen. Es wurde nichts geaendert.\n');
+    process.exit(1);
+  }
 }
 
 async function printStructure(engine, file, values) {
