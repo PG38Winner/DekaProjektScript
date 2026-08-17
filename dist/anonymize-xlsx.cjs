@@ -64650,6 +64650,205 @@ var import_promises3 = require("node:fs/promises");
 var import_node_path = __toESM(require("node:path"), 1);
 var import_exceljs2 = __toESM(require_excel(), 1);
 
+// src/excel/macros.js
+var import_promises2 = require("node:fs/promises");
+
+// src/excel/ooxml.js
+var import_promises = require("node:fs/promises");
+var import_jszip = __toESM(require_lib3(), 1);
+async function openWorkbookZip(file) {
+  return import_jszip.default.loadAsync(await (0, import_promises.readFile)(file));
+}
+async function readText(zip, path4) {
+  const entry = zip.file(path4);
+  return entry ? entry.async("string") : null;
+}
+function findInPartHead(zip, path4, pattern, maxBytes = 65536) {
+  const entry = zip.file(path4);
+  if (!entry) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    let buffer = "";
+    let settled = false;
+    const stream = entry.nodeStream("nodebuffer");
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      stream.destroy();
+      resolve(result);
+    };
+    stream.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+      const match = pattern.exec(buffer);
+      if (match) finish(match);
+      else if (buffer.length > maxBytes) finish(null);
+    });
+    stream.on("end", () => finish(null));
+    stream.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
+  });
+}
+function listSheets(workbookXml) {
+  if (!workbookXml) return [];
+  return [...workbookXml.matchAll(/<sheet\b[^>]*\/?>/g)].map((match) => {
+    const tag = match[0];
+    const name = /\bname="([^"]*)"/.exec(tag);
+    const rid = /\br:id="([^"]*)"/.exec(tag);
+    return name && rid ? { name: decodeXml(name[1]), rid: rid[1] } : null;
+  }).filter(Boolean);
+}
+function resolveRelationship(relsXml, rid) {
+  if (!relsXml) return null;
+  const pattern = new RegExp(`<Relationship\\b[^>]*Id="${rid}"[^>]*>`);
+  const tag = pattern.exec(relsXml);
+  if (!tag) return null;
+  const target = /\bTarget="([^"]*)"/.exec(tag[0]);
+  return target ? target[1] : null;
+}
+function sheetPartPath(target) {
+  return `xl/${String(target).replace(/^\/?xl\//, "")}`;
+}
+function decodeXml(value) {
+  return String(value).replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+}
+function escapeXml(value) {
+  return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// src/excel/macros.js
+var VBA_PART = "xl/vbaProject.bin";
+var VBA_SIGNATURE_PART = "xl/vbaProjectSignature.bin";
+var VBA_CONTENT_TYPE = "application/vnd.ms-office.vbaProject";
+var VBA_RELATIONSHIP = "http://schemas.microsoft.com/office/2006/relationships/vbaProject";
+var WORKBOOK_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml";
+var MACRO_WORKBOOK_TYPE = "application/vnd.ms-excel.sheet.macroEnabled.main+xml";
+var HARMLESS_LOSSES = [
+  /^xl\/calcChain\.xml$/,
+  /^docProps\/thumbnail\./,
+  /^xl\/printerSettings\//,
+  /\.rels$/,
+  /^\[Content_Types\]\.xml$/,
+  /\/$/
+];
+async function readMacroParts(file) {
+  const zip = await openWorkbookZip(file);
+  const parts = Object.keys(zip.files).filter((name) => !zip.files[name].dir);
+  const vbaEntry = zip.file(VBA_PART);
+  if (!vbaEntry) return null;
+  const workbookXml = await readText(zip, "xl/workbook.xml");
+  return {
+    vba: await vbaEntry.async("nodebuffer"),
+    signature: zip.file(VBA_SIGNATURE_PART) ? await zip.file(VBA_SIGNATURE_PART).async("nodebuffer") : null,
+    workbookCodeName: readAttribute(workbookXml, "workbookPr", "codeName"),
+    sheetCodeNames: await readSheetCodeNames(zip, workbookXml),
+    originalParts: parts
+  };
+}
+async function restoreMacroParts(file, macro) {
+  const zip = await openWorkbookZip(file);
+  zip.file(VBA_PART, macro.vba);
+  if (macro.signature) zip.file(VBA_SIGNATURE_PART, macro.signature);
+  zip.file("[Content_Types].xml", patchContentTypes(
+    await readText(zip, "[Content_Types].xml"),
+    Boolean(macro.signature)
+  ));
+  zip.file("xl/_rels/workbook.xml.rels", patchWorkbookRels(
+    await readText(zip, "xl/_rels/workbook.xml.rels")
+  ));
+  const workbookXml = await readText(zip, "xl/workbook.xml");
+  if (macro.workbookCodeName) {
+    zip.file("xl/workbook.xml", setAttribute(
+      workbookXml,
+      "workbookPr",
+      "codeName",
+      macro.workbookCodeName
+    ));
+  }
+  await restoreSheetCodeNames(zip, workbookXml, macro.sheetCodeNames);
+  const rebuilt = await zip.generateAsync({
+    type: "nodebuffer",
+    compression: "DEFLATE",
+    // Excel erwartet den Typ-Katalog als ersten Eintrag im Archiv.
+    mimeType: void 0
+  });
+  await (0, import_promises2.writeFile)(file, rebuilt);
+  const present = new Set(Object.keys(zip.files));
+  return macro.originalParts.filter(
+    (name) => !present.has(name) && !HARMLESS_LOSSES.some((re2) => re2.test(name))
+  );
+}
+async function readSheetCodeNames(zip, workbookXml) {
+  const codeNames = /* @__PURE__ */ new Map();
+  const rels = await readText(zip, "xl/_rels/workbook.xml.rels");
+  for (const sheet of listSheets(workbookXml)) {
+    const target = resolveRelationship(rels, sheet.rid);
+    if (!target) continue;
+    const sheetXml = await readText(zip, sheetPartPath(target));
+    const codeName = readAttribute(sheetXml, "sheetPr", "codeName");
+    if (codeName) codeNames.set(sheet.name, codeName);
+  }
+  return codeNames;
+}
+async function restoreSheetCodeNames(zip, workbookXml, codeNames) {
+  if (!codeNames.size) return;
+  const rels = await readText(zip, "xl/_rels/workbook.xml.rels");
+  for (const sheet of listSheets(workbookXml)) {
+    const codeName = codeNames.get(sheet.name);
+    if (!codeName) continue;
+    const target = resolveRelationship(rels, sheet.rid);
+    if (!target) continue;
+    const path4 = sheetPartPath(target);
+    const sheetXml = await readText(zip, path4);
+    if (!sheetXml) continue;
+    zip.file(path4, setSheetCodeName(sheetXml, codeName));
+  }
+}
+function patchContentTypes(xml, hasSignature) {
+  let patched = xml.replace(WORKBOOK_TYPE, MACRO_WORKBOOK_TYPE);
+  const overrides = [`<Override PartName="/${VBA_PART}" ContentType="${VBA_CONTENT_TYPE}"/>`];
+  if (hasSignature) {
+    overrides.push(
+      `<Override PartName="/${VBA_SIGNATURE_PART}" ContentType="application/vnd.ms-office.vbaProjectSignature"/>`
+    );
+  }
+  for (const override of overrides) {
+    if (patched.includes(override)) continue;
+    patched = patched.replace("</Types>", `${override}</Types>`);
+  }
+  return patched;
+}
+function patchWorkbookRels(xml) {
+  if (xml.includes(VBA_RELATIONSHIP)) return xml;
+  const used = new Set([...xml.matchAll(/Id="(rId\d+)"/g)].map((match) => match[1]));
+  let next = 1;
+  while (used.has(`rId${next}`)) next += 1;
+  const relationship = `<Relationship Id="rId${next}" Type="${VBA_RELATIONSHIP}" Target="vbaProject.bin"/>`;
+  return xml.replace("</Relationships>", `${relationship}</Relationships>`);
+}
+function setSheetCodeName(xml, codeName) {
+  if (/<sheetPr\b/.test(xml)) return setAttribute(xml, "sheetPr", "codeName", codeName);
+  return xml.replace(/(<worksheet\b[^>]*>)/, `$1<sheetPr codeName="${escapeXml(codeName)}"/>`);
+}
+function readAttribute(xml, tagName, attribute) {
+  if (!xml) return null;
+  const tag = new RegExp(`<${tagName}\\b[^>]*>`).exec(xml);
+  if (!tag) return null;
+  const value = new RegExp(`\\b${attribute}="([^"]*)"`).exec(tag[0]);
+  return value ? decodeXml(value[1]) : null;
+}
+function setAttribute(xml, tagName, attribute, value) {
+  const escaped = escapeXml(value);
+  const tag = new RegExp(`<${tagName}\\b[^>]*?(/?)>`).exec(xml);
+  if (!tag) {
+    return xml.replace(/(<workbook\b[^>]*>)/, `$1<${tagName} ${attribute}="${escaped}"/>`);
+  }
+  const existing = new RegExp(`\\b${attribute}="[^"]*"`);
+  const replacement = existing.test(tag[0]) ? tag[0].replace(existing, `${attribute}="${escaped}"`) : tag[0].replace(/(\/?)>$/, ` ${attribute}="${escaped}"$1>`);
+  return xml.replace(tag[0], replacement);
+}
+
 // src/core/classify.js
 var KINDS = {
   EMAIL: "email",
@@ -66743,203 +66942,261 @@ function buildText(original) {
   return text.slice(0, target).trim();
 }
 
-// src/excel/macros.js
-var import_promises2 = require("node:fs/promises");
-
-// src/excel/ooxml.js
-var import_promises = require("node:fs/promises");
-var import_jszip = __toESM(require_lib3(), 1);
-async function openWorkbookZip(file) {
-  return import_jszip.default.loadAsync(await (0, import_promises.readFile)(file));
-}
-async function readText(zip, path4) {
-  const entry = zip.file(path4);
-  return entry ? entry.async("string") : null;
-}
-function findInPartHead(zip, path4, pattern, maxBytes = 65536) {
-  const entry = zip.file(path4);
-  if (!entry) return Promise.resolve(null);
-  return new Promise((resolve, reject) => {
-    let buffer = "";
-    let settled = false;
-    const stream = entry.nodeStream("nodebuffer");
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      stream.destroy();
-      resolve(result);
-    };
-    stream.on("data", (chunk) => {
-      buffer += chunk.toString("utf8");
-      const match = pattern.exec(buffer);
-      if (match) finish(match);
-      else if (buffer.length > maxBytes) finish(null);
-    });
-    stream.on("end", () => finish(null));
-    stream.on("error", (error) => {
-      if (settled) return;
-      settled = true;
-      reject(error);
-    });
-  });
-}
-function listSheets(workbookXml) {
-  if (!workbookXml) return [];
-  return [...workbookXml.matchAll(/<sheet\b[^>]*\/?>/g)].map((match) => {
-    const tag = match[0];
-    const name = /\bname="([^"]*)"/.exec(tag);
-    const rid = /\br:id="([^"]*)"/.exec(tag);
-    return name && rid ? { name: decodeXml(name[1]), rid: rid[1] } : null;
-  }).filter(Boolean);
-}
-function resolveRelationship(relsXml, rid) {
-  if (!relsXml) return null;
-  const pattern = new RegExp(`<Relationship\\b[^>]*Id="${rid}"[^>]*>`);
-  const tag = pattern.exec(relsXml);
-  if (!tag) return null;
-  const target = /\bTarget="([^"]*)"/.exec(tag[0]);
-  return target ? target[1] : null;
-}
-function sheetPartPath(target) {
-  return `xl/${String(target).replace(/^\/?xl\//, "")}`;
-}
-function decodeXml(value) {
-  return String(value).replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
-}
-function escapeXml(value) {
-  return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
-// src/excel/macros.js
-var VBA_PART = "xl/vbaProject.bin";
-var VBA_SIGNATURE_PART = "xl/vbaProjectSignature.bin";
-var VBA_CONTENT_TYPE = "application/vnd.ms-office.vbaProject";
-var VBA_RELATIONSHIP = "http://schemas.microsoft.com/office/2006/relationships/vbaProject";
-var WORKBOOK_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml";
-var MACRO_WORKBOOK_TYPE = "application/vnd.ms-excel.sheet.macroEnabled.main+xml";
-var HARMLESS_LOSSES = [
-  /^xl\/calcChain\.xml$/,
-  /^docProps\/thumbnail\./,
-  /^xl\/printerSettings\//,
-  /\.rels$/,
-  /^\[Content_Types\]\.xml$/,
-  /\/$/
-];
-async function readMacroParts(file) {
-  const zip = await openWorkbookZip(file);
-  const parts = Object.keys(zip.files).filter((name) => !zip.files[name].dir);
-  const vbaEntry = zip.file(VBA_PART);
-  if (!vbaEntry) return null;
-  const workbookXml = await readText(zip, "xl/workbook.xml");
-  return {
-    vba: await vbaEntry.async("nodebuffer"),
-    signature: zip.file(VBA_SIGNATURE_PART) ? await zip.file(VBA_SIGNATURE_PART).async("nodebuffer") : null,
-    workbookCodeName: readAttribute(workbookXml, "workbookPr", "codeName"),
-    sheetCodeNames: await readSheetCodeNames(zip, workbookXml),
-    originalParts: parts
-  };
-}
-async function restoreMacroParts(file, macro) {
-  const zip = await openWorkbookZip(file);
-  zip.file(VBA_PART, macro.vba);
-  if (macro.signature) zip.file(VBA_SIGNATURE_PART, macro.signature);
-  zip.file("[Content_Types].xml", patchContentTypes(
-    await readText(zip, "[Content_Types].xml"),
-    Boolean(macro.signature)
-  ));
-  zip.file("xl/_rels/workbook.xml.rels", patchWorkbookRels(
-    await readText(zip, "xl/_rels/workbook.xml.rels")
-  ));
-  const workbookXml = await readText(zip, "xl/workbook.xml");
-  if (macro.workbookCodeName) {
-    zip.file("xl/workbook.xml", setAttribute(
-      workbookXml,
-      "workbookPr",
-      "codeName",
-      macro.workbookCodeName
-    ));
+// src/core/keep.js
+var ALL_SHEETS = "*";
+function parseKeep(entries) {
+  const rules = { global: /* @__PURE__ */ new Set(), perSheet: /* @__PURE__ */ new Map(), raw: [] };
+  for (const entry of entries) {
+    const text = String(entry).trim();
+    if (!text) continue;
+    rules.raw.push(text);
+    let currentSheet = null;
+    for (const part of splitList(text)) {
+      const separator = part.indexOf(":");
+      if (separator === -1) {
+        addColumn(rules, currentSheet, part, text);
+        continue;
+      }
+      const prefix = part.slice(0, separator).trim();
+      const column = part.slice(separator + 1).trim();
+      if (!prefix || !column) {
+        throw new Error(
+          `Ungueltige --keep-Angabe: "${part}"
+Erwartet wird "Spalte", "Blattname:Spalte" oder "*:Spalte".`
+        );
+      }
+      currentSheet = prefix === ALL_SHEETS ? null : normalize(prefix);
+      addColumn(rules, currentSheet, column, text);
+    }
   }
-  await restoreSheetCodeNames(zip, workbookXml, macro.sheetCodeNames);
-  const rebuilt = await zip.generateAsync({
-    type: "nodebuffer",
-    compression: "DEFLATE",
-    // Excel erwartet den Typ-Katalog als ersten Eintrag im Archiv.
-    mimeType: void 0
-  });
-  await (0, import_promises2.writeFile)(file, rebuilt);
-  const present = new Set(Object.keys(zip.files));
-  return macro.originalParts.filter(
-    (name) => !present.has(name) && !HARMLESS_LOSSES.some((re2) => re2.test(name))
+  return rules;
+}
+function addColumn(rules, sheet, column, context) {
+  const name = normalize(column);
+  if (!name) throw new Error(`Ungueltige --keep-Angabe: "${context}" enthaelt einen leeren Namen.`);
+  if (sheet === null) {
+    rules.global.add(name);
+    return;
+  }
+  let columns = rules.perSheet.get(sheet);
+  if (!columns) {
+    columns = /* @__PURE__ */ new Set();
+    rules.perSheet.set(sheet, columns);
+  }
+  columns.add(name);
+}
+function splitList(value) {
+  return String(value).split(/(?<!\\),/).map((part) => part.replace(/\\,/g, ",").trim()).filter(Boolean);
+}
+function isKept(rules, sheetName, header) {
+  const column = normalize(header);
+  if (rules.global.has(column)) return true;
+  const columns = rules.perSheet.get(normalize(sheetName));
+  return Boolean(columns && columns.has(column));
+}
+function validateKeep(rules, prepared) {
+  const sheetsByName = new Map(
+    prepared.map(({ sheet, columns }) => [
+      normalize(sheet.name),
+      { name: sheet.name, columns: columns.map((column) => column.header) }
+    ])
   );
-}
-async function readSheetCodeNames(zip, workbookXml) {
-  const codeNames = /* @__PURE__ */ new Map();
-  const rels = await readText(zip, "xl/_rels/workbook.xml.rels");
-  for (const sheet of listSheets(workbookXml)) {
-    const target = resolveRelationship(rels, sheet.rid);
-    if (!target) continue;
-    const sheetXml = await readText(zip, sheetPartPath(target));
-    const codeName = readAttribute(sheetXml, "sheetPr", "codeName");
-    if (codeName) codeNames.set(sheet.name, codeName);
+  const problems = [];
+  for (const column of rules.global) {
+    const found = prepared.some(({ columns }) => columns.some((candidate) => normalize(candidate.header) === column));
+    if (!found) problems.push(`Spalte "${column}" kommt in keinem verarbeiteten Blatt vor.`);
   }
-  return codeNames;
-}
-async function restoreSheetCodeNames(zip, workbookXml, codeNames) {
-  if (!codeNames.size) return;
-  const rels = await readText(zip, "xl/_rels/workbook.xml.rels");
-  for (const sheet of listSheets(workbookXml)) {
-    const codeName = codeNames.get(sheet.name);
-    if (!codeName) continue;
-    const target = resolveRelationship(rels, sheet.rid);
-    if (!target) continue;
-    const path4 = sheetPartPath(target);
-    const sheetXml = await readText(zip, path4);
-    if (!sheetXml) continue;
-    zip.file(path4, setSheetCodeName(sheetXml, codeName));
+  for (const [sheetName, columns] of rules.perSheet) {
+    const sheet = sheetsByName.get(sheetName);
+    if (!sheet) {
+      problems.push(
+        `Arbeitsblatt "${sheetName}" wird nicht verarbeitet. Verarbeitet werden: ${[...sheetsByName.values()].map((s2) => s2.name).join(", ")}`
+      );
+      continue;
+    }
+    for (const column of columns) {
+      const found = sheet.columns.some((header) => normalize(header) === column);
+      if (!found) {
+        problems.push(
+          `Spalte "${column}" gibt es im Blatt "${sheet.name}" nicht. Vorhanden: ${sheet.columns.join(", ")}`
+        );
+      }
+    }
+  }
+  if (problems.length) {
+    throw new Error(`Fehlerhafte --keep-Angabe:
+  ${problems.join("\n  ")}`);
   }
 }
-function patchContentTypes(xml, hasSignature) {
-  let patched = xml.replace(WORKBOOK_TYPE, MACRO_WORKBOOK_TYPE);
-  const overrides = [`<Override PartName="/${VBA_PART}" ContentType="${VBA_CONTENT_TYPE}"/>`];
-  if (hasSignature) {
-    overrides.push(
-      `<Override PartName="/${VBA_SIGNATURE_PART}" ContentType="application/vnd.ms-office.vbaProjectSignature"/>`
-    );
+function normalize(value) {
+  return String(value).trim().toLowerCase();
+}
+
+// src/excel/cells.js
+function toPlainValue(raw) {
+  if (raw === null || raw === void 0) return null;
+  if (raw instanceof Date) return raw;
+  if (typeof raw !== "object") return raw;
+  if ("richText" in raw) return raw.richText.map((part) => part.text).join("");
+  if ("text" in raw) return raw.text;
+  if ("formula" in raw || "sharedFormula" in raw) return raw.result ?? null;
+  if ("error" in raw) return null;
+  return String(raw);
+}
+function isReadOnlyValue(raw) {
+  if (!raw || typeof raw !== "object") return false;
+  return "formula" in raw || "sharedFormula" in raw || "error" in raw;
+}
+
+// src/excel/columns.js
+var SAMPLE_SIZE = 200;
+function readColumns(sheet) {
+  const headerRow = sheet.getRow(1);
+  const headers = /* @__PURE__ */ new Map();
+  headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+    const header = toPlainValue(cell.value);
+    if (header === null || String(header).trim() === "") return;
+    headers.set(colNumber, String(header).trim());
+  });
+  if (!headers.size) return [];
+  const { samples, counts } = collectSamples(sheet, headers);
+  return [...headers].map(([index, header]) => {
+    const count = counts.get(index) ?? { nonEmpty: 0, readOnly: 0 };
+    return {
+      header,
+      index,
+      kind: classifyColumn(header, samples.get(index) ?? []),
+      // Eine Spalte gilt als schreibgeschuetzt, wenn sie ausschliesslich aus
+      // Formeln besteht - wie die berechneten Felder in Access.
+      readOnly: count.nonEmpty > 0 && count.readOnly === count.nonEmpty,
+      note: count.nonEmpty > 0 && count.readOnly === count.nonEmpty ? "Formel" : null
+    };
+  });
+}
+function collectSamples(sheet, headers) {
+  const samples = /* @__PURE__ */ new Map();
+  const counts = /* @__PURE__ */ new Map();
+  let dataRows = 0;
+  const lastRow = Math.min(sheet.rowCount, SAMPLE_SIZE + 1);
+  for (let rowNumber = 2; rowNumber <= lastRow && dataRows < SAMPLE_SIZE; rowNumber += 1) {
+    const row = sheet.getRow(rowNumber);
+    if (!row) continue;
+    dataRows += 1;
+    for (const colNumber of headers.keys()) {
+      const raw = row.getCell(colNumber).value;
+      const value = toPlainValue(raw);
+      if (value === null || value === "") continue;
+      let count = counts.get(colNumber);
+      if (!count) {
+        count = { nonEmpty: 0, readOnly: 0 };
+        counts.set(colNumber, count);
+      }
+      count.nonEmpty += 1;
+      if (isReadOnlyValue(raw)) {
+        count.readOnly += 1;
+        continue;
+      }
+      let list = samples.get(colNumber);
+      if (!list) {
+        list = [];
+        samples.set(colNumber, list);
+      }
+      list.push(value);
+    }
   }
-  for (const override of overrides) {
-    if (patched.includes(override)) continue;
-    patched = patched.replace("</Types>", `${override}</Types>`);
+  return { samples, counts };
+}
+
+// src/excel/mask.js
+function maskWorkbook(workbook, { sheet: sheetName, keep = [], seed, consistent = true } = {}) {
+  const selected = selectSheets(workbook, sheetName);
+  const prepared = selected.map((sheet) => ({ sheet, columns: readColumns(sheet) }));
+  const keepRules = parseKeep(keep);
+  validateKeep(keepRules, prepared);
+  const generate = createGenerator({ seed, consistent });
+  const report = { sheets: [], rows: 0, changed: 0 };
+  for (const { sheet, columns } of prepared) {
+    const entry = {
+      name: sheet.name,
+      rows: Math.max(sheet.rowCount - 1, 0),
+      columns: [],
+      changed: 0,
+      skipped: null
+    };
+    if (!columns.length) {
+      entry.skipped = "keine Kopfzeile mit Spaltennamen";
+      report.sheets.push(entry);
+      continue;
+    }
+    const todo = [];
+    for (const column of columns) {
+      const kept = isKept(keepRules, sheet.name, column.header);
+      const columnEntry = {
+        header: column.header,
+        kind: column.kind,
+        status: kept ? "unveraendert" : column.readOnly ? "uebersprungen (Formel)" : "anonymisiert",
+        changed: 0
+      };
+      if (!kept && !column.readOnly && column.kind !== KINDS.EMPTY) {
+        todo.push({ column, entry: columnEntry });
+      } else if (!kept && !column.readOnly && column.kind === KINDS.EMPTY) {
+        columnEntry.status = "uebersprungen (leer)";
+      }
+      entry.columns.push(columnEntry);
+    }
+    entry.changed = anonymizeSheet(sheet, todo, generate);
+    report.changed += entry.changed;
+    report.rows += entry.rows;
+    report.sheets.push(entry);
   }
-  return patched;
+  return { report, warnings: [] };
 }
-function patchWorkbookRels(xml) {
-  if (xml.includes(VBA_RELATIONSHIP)) return xml;
-  const used = new Set([...xml.matchAll(/Id="(rId\d+)"/g)].map((match) => match[1]));
-  let next = 1;
-  while (used.has(`rId${next}`)) next += 1;
-  const relationship = `<Relationship Id="rId${next}" Type="${VBA_RELATIONSHIP}" Target="vbaProject.bin"/>`;
-  return xml.replace("</Relationships>", `${relationship}</Relationships>`);
+function normalizeHeader(name) {
+  return String(name).trim().toLowerCase();
 }
-function setSheetCodeName(xml, codeName) {
-  if (/<sheetPr\b/.test(xml)) return setAttribute(xml, "sheetPr", "codeName", codeName);
-  return xml.replace(/(<worksheet\b[^>]*>)/, `$1<sheetPr codeName="${escapeXml(codeName)}"/>`);
+function anonymizeSheet(sheet, todo, generate) {
+  if (!todo.length) return 0;
+  const targets = todo.map(({ column, entry }) => ({
+    index: column.index,
+    kind: column.kind,
+    key: `${column.kind}:${normalizeHeader(column.header)}`,
+    entry
+  }));
+  let changed = 0;
+  sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+    if (rowNumber === 1) return;
+    for (const target of targets) {
+      const cell = row.getCell(target.index);
+      const original = toPlainValue(cell.value);
+      if (original === null || isReadOnlyValue(cell.value)) continue;
+      writeCell(cell, generate(target.kind, original, target.key));
+      target.entry.changed += 1;
+      changed += 1;
+    }
+  });
+  return changed;
 }
-function readAttribute(xml, tagName, attribute) {
-  if (!xml) return null;
-  const tag = new RegExp(`<${tagName}\\b[^>]*>`).exec(xml);
-  if (!tag) return null;
-  const value = new RegExp(`\\b${attribute}="([^"]*)"`).exec(tag[0]);
-  return value ? decodeXml(value[1]) : null;
-}
-function setAttribute(xml, tagName, attribute, value) {
-  const escaped = escapeXml(value);
-  const tag = new RegExp(`<${tagName}\\b[^>]*?(/?)>`).exec(xml);
-  if (!tag) {
-    return xml.replace(/(<workbook\b[^>]*>)/, `$1<${tagName} ${attribute}="${escaped}"/>`);
+function writeCell(cell, replacement) {
+  const previous = cell.value;
+  if (previous && typeof previous === "object" && "hyperlink" in previous) {
+    const text = String(replacement);
+    cell.value = {
+      text,
+      hyperlink: /^[^\s@]+@[^\s@]+$/.test(text) ? `mailto:${text}` : text
+    };
+    return;
   }
-  const existing = new RegExp(`\\b${attribute}="[^"]*"`);
-  const replacement = existing.test(tag[0]) ? tag[0].replace(existing, `${attribute}="${escaped}"`) : tag[0].replace(/(\/?)>$/, ` ${attribute}="${escaped}"$1>`);
-  return xml.replace(tag[0], replacement);
+  cell.value = replacement;
+}
+function selectSheets(workbook, sheetName) {
+  if (!workbook.worksheets.length) throw new Error("Die Datei enthaelt kein Arbeitsblatt.");
+  if (!sheetName) return workbook.worksheets;
+  const sheet = workbook.getWorksheet(sheetName);
+  if (!sheet) {
+    const available = workbook.worksheets.map((s2) => s2.name).join(", ");
+    throw new Error(`Arbeitsblatt "${sheetName}" nicht gefunden. Vorhanden: ${available}`);
+  }
+  return [sheet];
 }
 
 // src/excel/inspect.js
@@ -67167,24 +67424,8 @@ function streamPart(zip, path4, onChunk) {
   });
 }
 
-// src/excel/cells.js
-function toPlainValue(raw) {
-  if (raw === null || raw === void 0) return null;
-  if (raw instanceof Date) return raw;
-  if (typeof raw !== "object") return raw;
-  if ("richText" in raw) return raw.richText.map((part) => part.text).join("");
-  if ("text" in raw) return raw.text;
-  if ("formula" in raw || "sharedFormula" in raw) return raw.result ?? null;
-  if ("error" in raw) return null;
-  return String(raw);
-}
-function isReadOnlyValue(raw) {
-  if (!raw || typeof raw !== "object") return false;
-  return "formula" in raw || "sharedFormula" in raw || "error" in raw;
-}
-
 // src/excel/inspect.js
-var SAMPLE_SIZE = 200;
+var SAMPLE_SIZE2 = 200;
 async function inspectWorkbook(file, { full = false } = {}) {
   const rowCounts = await readRowCounts(file);
   if (full) return inspectByFullRead(file, rowCounts);
@@ -67195,7 +67436,7 @@ async function inspectWorkbook(file, { full = false } = {}) {
   }
 }
 async function inspectByScan(file, rowCounts) {
-  const sheets = await scanWorkbook(file, SAMPLE_SIZE);
+  const sheets = await scanWorkbook(file, SAMPLE_SIZE2);
   if (!sheets.length) throw new ScanLimitation("kein Arbeitsblatt gefunden");
   if (sheets.some((sheet) => !sheet.name)) throw new ScanLimitation("Blattname nicht lesbar");
   const mapped = sheets.map((sheet) => ({
@@ -67255,152 +67496,6 @@ function lastRowOfRange2(ref) {
   const match = /(\d+)$/.exec(end ?? "");
   return match ? Number(match[1]) : null;
 }
-function readColumns(sheet) {
-  const headerRow = sheet.getRow(1);
-  const headers = /* @__PURE__ */ new Map();
-  headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
-    const header = toPlainValue(cell.value);
-    if (header === null || String(header).trim() === "") return;
-    headers.set(colNumber, String(header).trim());
-  });
-  if (!headers.size) return [];
-  const { samples, counts } = collectSamples(sheet, headers);
-  return [...headers].map(([index, header]) => {
-    const count = counts.get(index) ?? { nonEmpty: 0, readOnly: 0 };
-    return {
-      header,
-      index,
-      kind: classifyColumn(header, samples.get(index) ?? []),
-      // Eine Spalte gilt als schreibgeschuetzt, wenn sie ausschliesslich aus
-      // Formeln besteht - wie die berechneten Felder in Access.
-      readOnly: count.nonEmpty > 0 && count.readOnly === count.nonEmpty,
-      note: count.nonEmpty > 0 && count.readOnly === count.nonEmpty ? "Formel" : null
-    };
-  });
-}
-function collectSamples(sheet, headers) {
-  const samples = /* @__PURE__ */ new Map();
-  const counts = /* @__PURE__ */ new Map();
-  let dataRows = 0;
-  const lastRow = Math.min(sheet.rowCount, SAMPLE_SIZE + 1);
-  for (let rowNumber = 2; rowNumber <= lastRow && dataRows < SAMPLE_SIZE; rowNumber += 1) {
-    const row = sheet.getRow(rowNumber);
-    if (!row) continue;
-    dataRows += 1;
-    for (const colNumber of headers.keys()) {
-      const raw = row.getCell(colNumber).value;
-      const value = toPlainValue(raw);
-      if (value === null || value === "") continue;
-      let count = counts.get(colNumber);
-      if (!count) {
-        count = { nonEmpty: 0, readOnly: 0 };
-        counts.set(colNumber, count);
-      }
-      count.nonEmpty += 1;
-      if (isReadOnlyValue(raw)) {
-        count.readOnly += 1;
-        continue;
-      }
-      let list = samples.get(colNumber);
-      if (!list) {
-        list = [];
-        samples.set(colNumber, list);
-      }
-      list.push(value);
-    }
-  }
-  return { samples, counts };
-}
-
-// src/core/keep.js
-var ALL_SHEETS = "*";
-function parseKeep(entries) {
-  const rules = { global: /* @__PURE__ */ new Set(), perSheet: /* @__PURE__ */ new Map(), raw: [] };
-  for (const entry of entries) {
-    const text = String(entry).trim();
-    if (!text) continue;
-    rules.raw.push(text);
-    let currentSheet = null;
-    for (const part of splitList(text)) {
-      const separator = part.indexOf(":");
-      if (separator === -1) {
-        addColumn(rules, currentSheet, part, text);
-        continue;
-      }
-      const prefix = part.slice(0, separator).trim();
-      const column = part.slice(separator + 1).trim();
-      if (!prefix || !column) {
-        throw new Error(
-          `Ungueltige --keep-Angabe: "${part}"
-Erwartet wird "Spalte", "Blattname:Spalte" oder "*:Spalte".`
-        );
-      }
-      currentSheet = prefix === ALL_SHEETS ? null : normalize(prefix);
-      addColumn(rules, currentSheet, column, text);
-    }
-  }
-  return rules;
-}
-function addColumn(rules, sheet, column, context) {
-  const name = normalize(column);
-  if (!name) throw new Error(`Ungueltige --keep-Angabe: "${context}" enthaelt einen leeren Namen.`);
-  if (sheet === null) {
-    rules.global.add(name);
-    return;
-  }
-  let columns = rules.perSheet.get(sheet);
-  if (!columns) {
-    columns = /* @__PURE__ */ new Set();
-    rules.perSheet.set(sheet, columns);
-  }
-  columns.add(name);
-}
-function splitList(value) {
-  return String(value).split(/(?<!\\),/).map((part) => part.replace(/\\,/g, ",").trim()).filter(Boolean);
-}
-function isKept(rules, sheetName, header) {
-  const column = normalize(header);
-  if (rules.global.has(column)) return true;
-  const columns = rules.perSheet.get(normalize(sheetName));
-  return Boolean(columns && columns.has(column));
-}
-function validateKeep(rules, prepared) {
-  const sheetsByName = new Map(
-    prepared.map(({ sheet, columns }) => [
-      normalize(sheet.name),
-      { name: sheet.name, columns: columns.map((column) => column.header) }
-    ])
-  );
-  const problems = [];
-  for (const column of rules.global) {
-    const found = prepared.some(({ columns }) => columns.some((candidate) => normalize(candidate.header) === column));
-    if (!found) problems.push(`Spalte "${column}" kommt in keinem verarbeiteten Blatt vor.`);
-  }
-  for (const [sheetName, columns] of rules.perSheet) {
-    const sheet = sheetsByName.get(sheetName);
-    if (!sheet) {
-      problems.push(
-        `Arbeitsblatt "${sheetName}" wird nicht verarbeitet. Verarbeitet werden: ${[...sheetsByName.values()].map((s2) => s2.name).join(", ")}`
-      );
-      continue;
-    }
-    for (const column of columns) {
-      const found = sheet.columns.some((header) => normalize(header) === column);
-      if (!found) {
-        problems.push(
-          `Spalte "${column}" gibt es im Blatt "${sheet.name}" nicht. Vorhanden: ${sheet.columns.join(", ")}`
-        );
-      }
-    }
-  }
-  if (problems.length) {
-    throw new Error(`Fehlerhafte --keep-Angabe:
-  ${problems.join("\n  ")}`);
-  }
-}
-function normalize(value) {
-  return String(value).trim().toLowerCase();
-}
 
 // src/excel/anonymize.js
 async function anonymizeWorkbook({
@@ -67414,54 +67509,16 @@ async function anonymizeWorkbook({
   consistent = true
 }) {
   const workbook = await readWorkbook(file);
-  const selected = selectSheets(workbook, sheetName);
-  const prepared = selected.map((sheet) => ({ sheet, columns: readColumns(sheet) }));
-  const keepRules = parseKeep(keep);
-  validateKeep(keepRules, prepared);
-  const generate = createGenerator({ seed, consistent });
-  const report = {
-    sheets: [],
-    rows: 0,
-    changed: 0,
-    output: null,
-    backup: null,
-    warnings: [],
-    macrosPreserved: false
-  };
-  for (const { sheet, columns } of prepared) {
-    const entry = {
-      name: sheet.name,
-      rows: Math.max(sheet.rowCount - 1, 0),
-      columns: [],
-      changed: 0,
-      skipped: null
-    };
-    if (!columns.length) {
-      entry.skipped = "keine Kopfzeile mit Spaltennamen";
-      report.sheets.push(entry);
-      continue;
-    }
-    const todo = [];
-    for (const column of columns) {
-      const kept = isKept(keepRules, sheet.name, column.header);
-      const columnEntry = {
-        header: column.header,
-        kind: column.kind,
-        status: kept ? "unveraendert" : column.readOnly ? "uebersprungen (Formel)" : "anonymisiert",
-        changed: 0
-      };
-      if (!kept && !column.readOnly && column.kind !== KINDS.EMPTY) {
-        todo.push({ column, entry: columnEntry });
-      } else if (!kept && !column.readOnly && column.kind === KINDS.EMPTY) {
-        columnEntry.status = "uebersprungen (leer)";
-      }
-      entry.columns.push(columnEntry);
-    }
-    entry.changed = anonymizeSheet(sheet, todo, generate);
-    report.changed += entry.changed;
-    report.rows += entry.rows;
-    report.sheets.push(entry);
-  }
+  const { report, warnings } = maskWorkbook(workbook, {
+    sheet: sheetName,
+    keep,
+    seed,
+    consistent
+  });
+  report.output = null;
+  report.backup = null;
+  report.macrosPreserved = false;
+  report.warnings = warnings;
   if (dryRun) return report;
   const target = out ? import_node_path.default.resolve(out) : import_node_path.default.resolve(file);
   if (backup && target === import_node_path.default.resolve(file)) {
@@ -67488,50 +67545,6 @@ async function handleMacros(macro, target, report) {
     );
   }
 }
-function anonymizeSheet(sheet, todo, generate) {
-  if (!todo.length) return 0;
-  const targets = todo.map(({ column, entry }) => ({
-    index: column.index,
-    kind: column.kind,
-    key: `${column.kind}:${normalizeHeader(column.header)}`,
-    entry
-  }));
-  let changed = 0;
-  sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
-    if (rowNumber === 1) return;
-    for (const target of targets) {
-      const cell = row.getCell(target.index);
-      const original = toPlainValue(cell.value);
-      if (original === null || isReadOnlyValue(cell.value)) continue;
-      writeCell(cell, generate(target.kind, original, target.key));
-      target.entry.changed += 1;
-      changed += 1;
-    }
-  });
-  return changed;
-}
-function writeCell(cell, replacement) {
-  const previous = cell.value;
-  if (previous && typeof previous === "object" && "hyperlink" in previous) {
-    const text = String(replacement);
-    cell.value = {
-      text,
-      hyperlink: /^[^\s@]+@[^\s@]+$/.test(text) ? `mailto:${text}` : text
-    };
-    return;
-  }
-  cell.value = replacement;
-}
-function selectSheets(workbook, sheetName) {
-  if (!workbook.worksheets.length) throw new Error("Die Datei enthaelt kein Arbeitsblatt.");
-  if (!sheetName) return workbook.worksheets;
-  const sheet = workbook.getWorksheet(sheetName);
-  if (!sheet) {
-    const available = workbook.worksheets.map((s2) => s2.name).join(", ");
-    throw new Error(`Arbeitsblatt "${sheetName}" nicht gefunden. Vorhanden: ${available}`);
-  }
-  return [sheet];
-}
 async function readWorkbook(file) {
   try {
     await (0, import_promises3.access)(file, import_promises3.constants.R_OK);
@@ -67556,9 +67569,6 @@ async function createBackup(file) {
   );
   await (0, import_promises3.copyFile)(resolved, target);
   return target;
-}
-function normalizeHeader(name) {
-  return String(name).trim().toLowerCase();
 }
 
 // src/access/anonymize.js
@@ -73344,15 +73354,9 @@ var MDBReader = class {
   }
 };
 
-// src/access/read.js
+// src/access/describe.js
 var UNSUPPORTED_TYPES = /* @__PURE__ */ new Set(["OLE", "Binary", "Complex", "RepID"]);
-async function readDatabase(file, { password, rowLimit } = {}) {
-  let buffer;
-  try {
-    buffer = await (0, import_promises4.readFile)(file);
-  } catch {
-    throw new Error(`Datei nicht gefunden oder nicht lesbar: ${file}`);
-  }
+function describeDatabase(buffer, { password, rowLimit } = {}) {
   const reader = openDatabase(buffer, password);
   return reader.getTableNames({ normalTables: true, systemTables: false, linkedTables: false }).map((name) => {
     const table = reader.getTable(name);
@@ -73397,8 +73401,19 @@ function readRows(table, columns, rowLimit) {
   });
 }
 
+// src/access/read.js
+async function readDatabase(file, { password, rowLimit } = {}) {
+  let buffer;
+  try {
+    buffer = await (0, import_promises4.readFile)(file);
+  } catch {
+    throw new Error(`Datei nicht gefunden oder nicht lesbar: ${file}`);
+  }
+  return describeDatabase(buffer, { password, rowLimit });
+}
+
 // src/access/plan.js
-var SAMPLE_SIZE2 = 200;
+var SAMPLE_SIZE3 = 200;
 var KEY_NAME_HINT = /(id|nr|nummer|schluessel|key)$/i;
 function planAnonymization(tables, {
   keep = [],
@@ -73473,7 +73488,7 @@ function prepareTable(table) {
   const columns = table.columns.map((column) => {
     const samples = [];
     for (const row of table.rows) {
-      if (samples.length >= SAMPLE_SIZE2) break;
+      if (samples.length >= SAMPLE_SIZE3) break;
       const value = row[column.name];
       if (value === null || value === void 0 || value === "") continue;
       samples.push(value);
@@ -73563,6 +73578,11 @@ var MAX_SHEET_NAME = 31;
 var DATE_TYPES = /* @__PURE__ */ new Set(["DateTime", "DateTimeExtended"]);
 async function writeWorkbook(file, result) {
   const workbook = new import_exceljs3.default.Workbook();
+  const notes = fillWorkbook(workbook, result);
+  await workbook.xlsx.writeFile(file);
+  return notes;
+}
+function fillWorkbook(workbook, result) {
   const notes = [];
   const used = /* @__PURE__ */ new Set();
   for (const table of result.tables) {
@@ -73581,7 +73601,6 @@ async function writeWorkbook(file, result) {
     }
   }
   if (!workbook.worksheets.length) workbook.addWorksheet("Leer");
-  await workbook.xlsx.writeFile(file);
   return notes;
 }
 function sheetNameFor(tableName, used = /* @__PURE__ */ new Set()) {
