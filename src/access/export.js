@@ -27,6 +27,21 @@ const DATE_TYPES = new Set(['DateTime', 'DateTimeExtended']);
  */
 export async function writeWorkbook(file, result) {
   const workbook = new ExcelJS.Workbook();
+  const notes = fillWorkbook(workbook, result);
+
+  await workbook.xlsx.writeFile(file);
+  return notes;
+}
+
+/**
+ * Fuellt eine bereits erzeugte Arbeitsmappe - ohne Dateizugriff, damit die
+ * Browser-Fassung dieselbe Aufbereitung nutzen kann.
+ *
+ * @param {import('exceljs').Workbook} workbook
+ * @param {object} result  Rueckgabe von planAnonymization().
+ * @returns {string[]} Hinweise, etwa zu umbenannten Blaettern.
+ */
+export function fillWorkbook(workbook, result) {
   const notes = [];
   const used = new Set();
 
@@ -54,7 +69,6 @@ export async function writeWorkbook(file, result) {
 
   if (!workbook.worksheets.length) workbook.addWorksheet('Leer');
 
-  await workbook.xlsx.writeFile(file);
   return notes;
 }
 

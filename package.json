@@ -8,8 +8,9 @@
   },
   "scripts": {
     "start": "node src/cli.js",
-    "build": "esbuild src/cli.js --bundle --platform=node --target=node20 --format=cjs --outfile=dist/anonymize-xlsx.cjs",
-    "test": "node --test test/*.test.js"
+    "build": "esbuild src/cli.js --bundle --platform=node --target=node20 --format=cjs --outfile=dist/anonymize-xlsx.cjs && node build-web.js",
+    "test": "node --test test/*.test.js",
+    "build:web": "node build-web.js"
   },
   "repository": {
     "type": "git",
@@ -26,6 +27,9 @@
     "mdb-reader": "^3.2.0"
   },
   "devDependencies": {
-    "esbuild": "^0.28.2"
+    "buffer": "^6.0.3",
+    "esbuild": "^0.28.2",
+    "events": "^3.3.0",
+    "stream-browserify": "^3.0.0"
   }
 }

@@ -12,6 +12,39 @@ Alles läuft **vollständig in Node.js**, ohne Fremdprozesse und ohne
 Zusatzsoftware: kein installiertes Microsoft Excel, kein Access, kein
 ACE-OLEDB, kein PowerShell. Damit läuft es unter Windows, Linux und macOS.
 
+## Ohne Freigabe: die Browser-Fassung
+
+Auf einem verwalteten Firmenrechner ist **jede Programmdatei** freigabepflichtig
+– eine mitgelieferte `node.exe` genauso wie früher ein PowerShell-Skript.
+Deshalb gibt es dieselbe Funktion als **Browser-Anwendung**:
+
+```
+dist\maskierer.html      (im Browser öffnen – Doppelklick genügt)
+dist\maskierer.js        (muss im selben Ordner liegen)
+```
+
+Datei hineinziehen, Spalten ankreuzen, die unverändert bleiben sollen,
+Knopf drücken – das Ergebnis wird heruntergeladen.
+
+| | Browser-Fassung | Kommandozeile |
+|---|---|---|
+| Programmdatei nötig | **nein** | ja (`node.exe`) |
+| Installation | keine | keine |
+| Netzwerkzugriff | keiner | keiner |
+| Excel `.xlsx`/`.xlsm` | ja | ja |
+| Access `.accdb`/`.mdb` | ja (nur lesen) | ja (nur lesen) |
+| Für sehr große Dateien | begrenzt durch den Browser-Speicher | besser geeignet |
+| Makro-Erhalt bei `.xlsm` | nein | ja |
+
+**Die Daten verlassen den Rechner nicht.** Die Seite lädt nichts nach und
+sendet nichts; das ist im Browser nachprüfbar (Entwicklertools → Netzwerk –
+die Liste bleibt leer). Geprüft wurde das automatisiert: eine Testfahrt durch
+einen echten Chromium meldet null Netzwerkzugriffe.
+
+Was dabei als Nachweis gilt: `maskierer.js` ist reiner Text und lässt sich
+lesen. Es gibt keinen Aufruf einer Adresse, kein `fetch`, kein `XMLHttpRequest`
+und kein `eval`.
+
 ## Für die IT-Freigabe
 
 Die wichtigsten Eigenschaften, kurz und prüfbar:
@@ -25,6 +58,7 @@ Die wichtigsten Eigenschaften, kurz und prüfbar:
 | Laufzeit | `node.exe` v24.19.0, **Authenticode-signiert** (Microsoft-Zertifikatskette) | `Get-AuthenticodeSignature node-v24.19.0-win-x64\node.exe` |
 | Ausgabe | nur Blatt-/Spaltennamen und Anzahlen – **keine Zellinhalte** | Bericht ansehen |
 | Fassung festhalten | `anonymisieren.cmd --version` nennt Fassung und SHA-256 | siehe unten |
+| Ganz ohne Programmdatei? | **ja** – siehe Browser-Fassung oben | `dist\maskierer.html` öffnen |
 
 ### Ausführung ohne gelockerte Richtlinie
 

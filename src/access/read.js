@@ -11,13 +11,11 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import MDBReader from 'mdb-reader';
 
-/**
- * Spaltentypen, deren Inhalt nicht sinnvoll ersetzt werden kann: eingebettete
- * Dateien, Bilder, Anlagen und Mehrfachwertfelder. Sie bleiben unangetastet.
- */
-const UNSUPPORTED_TYPES = new Set(['OLE', 'Binary', 'Complex', 'RepID']);
+import { describeDatabase } from './describe.js';
+
+export { describeDatabase };
+
 
 /**
  * @param {string} file Pfad zur .accdb/.mdb-Datei.
@@ -34,65 +32,5 @@ export async function readDatabase(file, { password, rowLimit } = {}) {
     throw new Error(`Datei nicht gefunden oder nicht lesbar: ${file}`);
   }
 
-  const reader = openDatabase(buffer, password);
-
-  return reader.getTableNames({ normalTables: true, systemTables: false, linkedTables: false })
-    .map((name) => {
-      const table = reader.getTable(name);
-      const columns = table.getColumns().map(describeColumn);
-
-      return {
-        name,
-        rowCount: table.rowCount,
-        columns,
-        rows: readRows(table, columns, rowLimit),
-      };
-    });
-}
-
-function openDatabase(buffer, password) {
-  try {
-    return new MDBReader(buffer, password ? { password } : undefined);
-  } catch (error) {
-    throw new Error(
-      `Datenbank konnte nicht gelesen werden: ${error.message}\n` +
-      'Ist die Datei kennwortgeschuetzt, das Kennwort mit --password angeben.',
-    );
-  }
-}
-
-/**
- * Uebersetzt eine Spaltenbeschreibung von mdb-reader in unsere Form und
- * entscheidet, ob die Spalte beschreibbar ist.
- *
- * Autowert-Spalten (`autoLong`) und automatische GUIDs (`autoUUID`) vergibt
- * Access selbst - ihre Werte sind Verwaltungsdaten und bleiben stehen.
- */
-function describeColumn(column) {
-  const unsupported = UNSUPPORTED_TYPES.has(column.type);
-  const automatic = Boolean(column.autoLong || column.autoUUID);
-
-  return {
-    name: column.name,
-    type: column.type,
-    size: column.size,
-    nullable: column.nullable,
-    autoNumber: Boolean(column.autoLong),
-    readOnly: unsupported || automatic,
-    readOnlyReason: automatic ? 'Autowert' : unsupported ? `Typ ${column.type}` : null,
-  };
-}
-
-/** Liest die Zeilen ohne die Spalten, die ohnehin nicht angefasst werden. */
-function readRows(table, columns, rowLimit) {
-  const readable = columns
-    .filter((column) => !UNSUPPORTED_TYPES.has(column.type))
-    .map((column) => column.name);
-
-  if (!readable.length) return [];
-
-  return table.getData({
-    columns: readable,
-    ...(rowLimit === undefined ? {} : { rowLimit }),
-  });
+  return describeDatabase(buffer, { password, rowLimit });
 }
