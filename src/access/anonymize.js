@@ -68,6 +68,7 @@ export async function anonymizeDatabase({
   file,
   table,
   keep = [],
+  clear = [],
   out,
   dryRun = false,
   seed,
@@ -75,7 +76,7 @@ export async function anonymizeDatabase({
   password,
 }) {
   const tables = await readDatabase(file, { password });
-  const { report, result } = planAnonymization(tables, { keep, table, seed, consistent });
+  const { report, result } = planAnonymization(tables, { keep, clear, table, seed, consistent });
 
   if (dryRun) return report;
 
@@ -86,12 +87,12 @@ export async function anonymizeDatabase({
   return report;
 }
 
-/** "kunden.accdb" -> "kunden.anonymisiert.xlsx" */
+/** "kunden.accdb" -> "kunden.maskiert.xlsx" */
 function defaultTarget(file) {
   const resolved = path.resolve(file);
   const extension = path.extname(resolved);
   return path.join(
     path.dirname(resolved),
-    `${path.basename(resolved, extension)}.anonymisiert.xlsx`,
+    `${path.basename(resolved, extension)}.maskiert.xlsx`,
   );
 }

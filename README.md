@@ -19,12 +19,13 @@ Die wichtigsten Eigenschaften, kurz und prüfbar:
 | Frage | Antwort | Nachprüfbar mit |
 |-------|---------|-----------------|
 | PowerShell, VBScript, Makros? | **Nein.** Kein Skript-Interpreter, kein Kindprozess | `findstr /S /I powershell src\*` – keine Treffer |
-| Netzwerkzugriff zur Laufzeit? | **Nein.** Kein `http`/`net`/`dns`/`tls` im Code oder Bündel | `findstr /C:"require(\"https\")" dist\anonymize-xlsx.cjs` |
+| Netzwerkzugriff zur Laufzeit? | **Nein.** Kein `http`/`net`/`dns`/`tls` im Code oder Bündel | `findstr /C:"require(\"https\")" dist\maskierer.cjs` |
 | Administratorrechte? | **Nein.** Keine Installation, keine Registry, kein Dienst | – |
 | Zusatzsoftware? | **Nein.** Kein Excel, kein Access, kein ACE-OLEDB | – |
-| Laufzeit | `node.exe` v24.19.0, **Authenticode-signiert** (Microsoft-Zertifikatskette) | `Get-AuthenticodeSignature node-v24.19.0-win-x64\node.exe` |
+| Laufzeit | `node.exe` v24.19.0, **Authenticode-signiert** von der *OpenJS Foundation*, Kette über *Microsoft ID Verified Code Signing PCA 2021* | Rechtsklick auf `node.exe` → *Eigenschaften* → *Digitale Signaturen* |
+| Herkunft der Laufzeit | offizielles Archiv von nodejs.org, Prüfsumme dokumentiert | `certutil -hashfile node-v24.19.0-win-x64\node.exe SHA256` |
 | Ausgabe | nur Blatt-/Spaltennamen und Anzahlen – **keine Zellinhalte** | Bericht ansehen |
-| Fassung festhalten | `anonymisieren.cmd --version` nennt Fassung und SHA-256 | siehe unten |
+| Fassung festhalten | `maskieren.cmd --version` nennt Fassung und SHA-256 | siehe unten |
 
 ### Ausführung ohne gelockerte Richtlinie
 
@@ -35,13 +36,25 @@ Gestartet wird eine Batchdatei, die `node.exe` mit einer JavaScript-Datei
 aufruft:
 
 ```
-anonymisieren.cmd "C:\Daten\kunden.xlsx" --list
+maskieren.cmd "C:\Daten\kunden.xlsx" --list
 ```
+
+> **Hinweis für Prüfungen:** Frühere Fassungen dieses Projekts waren in
+> PowerShell geschrieben. Diese Fassung enthält **keine einzige `.ps1`-Datei**
+> mehr. Wird in einer Prüfung dennoch PowerShell genannt, wurde ein alter
+> Stand betrachtet – Suchmaschinen und Sicherheitswerkzeuge halten
+> Repository-Inhalte teils länger vor. Gegenprobe im ausgepackten Ordner:
+>
+> ```
+> dir /S /B *.ps1
+> ```
+>
+> Die Ausgabe muss leer sein.
 
 ### Herkunft festhalten
 
 ```
-anonymisieren.cmd --version
+maskieren.cmd --version
 ```
 
 gibt Fassung, Node-Version und die **SHA-256-Prüfsumme der ausgeführten Datei**
@@ -75,7 +88,7 @@ herunterladen (grüner Knopf *Code → Download ZIP*), entpacken, Eingabe­auf­
 im entpackten Ordner öffnen – fertig:
 
 ```
-anonymisieren.cmd "C:\Daten\kunden.xlsx" --list
+maskieren.cmd "C:\Daten\kunden.xlsx" --list
 ```
 
 Alles Nötige liegt gebrauchsfertig im Repository:
@@ -83,8 +96,8 @@ Alles Nötige liegt gebrauchsfertig im Repository:
 | Bestandteil | Zweck |
 |-------------|-------|
 | `node-v24.19.0-win-x64\node.exe` | Node.js-Laufzeit für Windows |
-| `dist\anonymize-xlsx.cjs` | das Werkzeug samt aller Abhängigkeiten in einer Datei |
-| `anonymisieren.cmd` | Startskript – findet die Laufzeit selbst |
+| `dist\maskierer.cjs` | das Werkzeug samt aller Abhängigkeiten in einer Datei |
+| `maskieren.cmd` | Startskript – findet die Laufzeit selbst |
 
 Ist auf dem Rechner bereits Node.js ab Version 20 installiert, verwendet das
 Startskript dieses.
@@ -94,10 +107,10 @@ Eingabeaufforderung, in der die mitgelieferte Laufzeit im Suchpfad liegt.
 Darin funktioniert `node` ohne Installation:
 
 ```
-node dist\anonymize-xlsx.cjs "C:\Daten\kunden.xlsx" --list
+node dist\maskierer.cjs "C:\Daten\kunden.xlsx" --list
 ```
 
-Unter Linux/macOS leistet `./anonymisieren.sh` dasselbe, setzt dort aber ein
+Unter Linux/macOS leistet `./maskieren.sh` dasselbe, setzt dort aber ein
 installiertes Node.js voraus – die mitgelieferte Laufzeit ist eine
 Windows-Version.
 
@@ -106,7 +119,7 @@ Windows-Version.
 ```bash
 npm install          # Abhängigkeiten
 npm test             # Tests
-npm run build        # dist/anonymize-xlsx.cjs neu erzeugen
+npm run build        # dist/maskierer.cjs neu erzeugen
 ```
 
 `npm run build` ist nach jeder Änderung an `src/` nötig, damit das Bündel den
@@ -116,17 +129,20 @@ von Bündel und Quellcode bei gleichem Startwert.
 ## Verwenden
 
 Die Beispiele verwenden `node src/cli.js`; mit dem Bündel entsprechend
-`node dist/anonymize-xlsx.cjs` oder `anonymisieren.cmd`.
+`node dist/maskierer.cjs` oder `maskieren.cmd`.
 
 ```bash
 # Blätter und erkannte Spaltentypen anzeigen (verändert nichts)
 node src/cli.js daten.xlsx --list
 
-# Anonymisieren, Schlüsselspalten ausnehmen
+# Maskieren, Schlüsselspalten ausnehmen
 node src/cli.js daten.xlsx --keep "Kunden:KundenID" --keep "Bestellungen:BestellID"
 
+# Freitextspalte leeren statt ersetzen
+node src/cli.js daten.xlsx --clear "Kunden:Bemerkung"
+
 # In eine neue Datei schreiben, bestimmtes Blatt, reproduzierbar
-node src/cli.js daten.xlsx --sheet Kunden --out anonym.xlsx --seed 42
+node src/cli.js daten.xlsx --sheet Kunden --out maskiert.xlsx --seed 42
 ```
 
 | Option | Wirkung |
@@ -134,7 +150,8 @@ node src/cli.js daten.xlsx --sheet Kunden --out anonym.xlsx --seed 42
 | `--list` | Blätter, Spalten und erkannte Inhaltsart anzeigen |
 | `--sheet <name>` | nur dieses Arbeitsblatt (Standard: **alle** Blätter) |
 | `--keep <angabe>` | Spalten, die **unverändert** bleiben – siehe unten |
-| `--out <datei>` | Zieldatei; Standard: `<name>.anonymisiert.<endung>` neben der Quelldatei |
+| `--clear <angabe>` | Spalten, die **geleert** werden – Inhalt wird entfernt statt ersetzt; Schreibweise wie `--keep` |
+| `--out <datei>` | Zieldatei; Standard: `<name>.maskiert.<endung>` neben der Quelldatei |
 | `--in-place` | Quelldatei überschreiben (nur Excel); zeigt vorher den Bericht, verlangt Bestätigung, Sicherungskopie ist Pflicht |
 | `--yes` | Bestätigung zu `--in-place` vorab erteilen (Aufruf ohne Terminal) |
 | `--version` | Fassung und SHA-256-Prüfsumme ausgeben |
@@ -260,6 +277,77 @@ Arbeitsblatt: Kunden
   Ort          unveraendert     city
 ```
 
+### Freitextfelder: `--clear`
+
+Bemerkungs-, Notiz- und Kommentarspalten sind der wunde Punkt jeder
+Maskierung: Dort kann alles stehen – ein Name, eine Telefonnummer, eine
+Krankheitsangabe. Das Werkzeug **versteht keinen Inhalt** und kann darin
+nichts gezielt erkennen.
+
+Standardmäßig wird eine solche Spalte als „sonstiger Text" eingestuft und
+durch erfundenen Fülltext ersetzt. Der ursprüngliche Text ist damit weg – die
+Länge bleibt erhalten, sonst nichts.
+
+Wo das nicht genügen soll, leert `--clear` die Spalte vollständig:
+
+```bash
+node src/cli.js daten.xlsx --clear "Kunden:Bemerkung,Notiz" --clear "Fälle:Freitext"
+```
+
+Die Schreibweise ist dieselbe wie bei `--keep`, samt Blatt-Präfix und
+Mehrfachangabe. Im Bericht erscheinen solche Spalten als `geleert`:
+
+```
+Arbeitsblatt: Kunden
+  Bemerkung    geleert          text        5 Zellen
+```
+
+**Empfehlung:** Freitextspalten entweder leeren (`--clear`) oder bewusst
+ersetzen lassen – aber **niemals** in `--keep` aufnehmen. Genau dort bleiben
+personenbezogene Angaben sonst unbemerkt stehen.
+
+## Sicherung und Rücknahme (Rollback)
+
+| Aufruf | Was mit dem Original passiert |
+|--------|-------------------------------|
+| Standard (ohne `--in-place`) | bleibt **unangetastet**; das Ergebnis landet in `<name>.maskiert.<endung>` |
+| `--out <datei>` | bleibt **unangetastet**; das Ergebnis landet in der genannten Datei |
+| `--dry-run` | es wird **nichts** geschrieben |
+| Access (`.accdb`/`.mdb`) | wird **nur gelesen**, in jedem Fall |
+| `--in-place` | wird überschrieben – **vorher** wird eine Sicherungskopie angelegt |
+
+Eine Rücknahme ist also nur nach `--in-place` überhaupt nötig. Dabei entsteht
+neben der Quelldatei eine Sicherungskopie:
+
+```
+kunden.backup-2026-08-19T10-42-07.xlsx
+```
+
+Der Zeitstempel ist die Startzeit des Laufs. Die Sicherung ist **verpflichtend
+und nicht abschaltbar**; es gibt keine Option, sie zu unterdrücken. Ihr Pfad
+steht am Ende des Berichts:
+
+```
+  Sicherungskopie:          C:\Daten\kunden.backup-2026-08-19T10-42-07.xlsx
+```
+
+**Zurücksetzen** heißt: die maskierte Datei löschen oder umbenennen und die
+Sicherungskopie auf den ursprünglichen Namen zurückbenennen.
+
+```
+ren kunden.xlsx kunden.maskiert-verworfen.xlsx
+ren kunden.backup-2026-08-19T10-42-07.xlsx kunden.xlsx
+```
+
+Unter Linux/macOS entsprechend mit `mv`. Danach ist der Stand vor dem Lauf
+wiederhergestellt – die Sicherung ist eine Byte-für-Byte-Kopie der Datei, wie
+sie vor dem Überschreiben vorlag, einschließlich Makros.
+
+Jeder `--in-place`-Lauf legt eine **eigene** Sicherung mit eigenem Zeitstempel
+an; ältere werden nicht überschrieben. Sie werden aber auch nicht aufgeräumt –
+nach erfolgreicher Prüfung des Ergebnisses gehören sie gelöscht, denn sie
+enthalten die **Originaldaten**.
+
 ## Art der Maskierung
 
 Die Ersetzung erfolgt typ- und inhaltsabhängig. Die Inhaltsart wird aus dem
@@ -312,6 +400,8 @@ Konkret bleiben diese Risiken bestehen:
 - **Freitextfelder.** Eine Bemerkungsspalte wird durch Fülltext ersetzt, aber
   wenn personenbezogene Angaben in einer Spalte stehen, die als „unverändert"
   gewählt wurde, bleiben sie erhalten. Das Werkzeug versteht keinen Inhalt.
+  Wer sichergehen will, leert solche Spalten mit `--clear` – siehe
+  [Freitextfelder: `--clear`](#freitextfelder---clear).
 - **Re-Identifikation durch Kombination.** Datum, Ort, Betrag und seltene
   Merkmale können zusammen auf eine Person zurückführen, auch wenn Name und
   Adresse ersetzt sind. Ein einzelner Wohnort mit einem einzigen Datensatz
@@ -349,7 +439,7 @@ node src/cli.js daten.accdb --keep "Kunden:Kundennummer" --out anonym.xlsx
 
 Gelesen wird die Datenbank mit `mdb-reader` – reines JavaScript. Geschrieben
 wird eine **neue Excel-Datei**, je Tabelle ein Arbeitsblatt. Ohne `--out`
-entsteht sie neben der Datenbank als `<datenbank>.anonymisiert.xlsx`.
+entsteht sie neben der Datenbank als `<datenbank>.maskiert.xlsx`.
 
 **Die Datenbank selbst wird nie verändert.** Eine Sicherungskopie erübrigt
 sich damit – das Original kann gar nicht beschädigt werden.
@@ -444,12 +534,22 @@ Makros verloren – auch darauf wird hingewiesen.
 ## Tests
 
 ```bash
-npm test
+npm test          # Testlauf
+npm run check     # Bündel neu bauen und danach testen
 ```
 
-87 Tests zu Typerkennung, Werterhaltung, Dateibehandlung, Makro-Erhalt und
-Gleichlauf von Bündel und Quellcode sowie zur Access-Logik. Die Bündel-Tests werden übersprungen,
-solange `dist/` nicht gebaut ist.
+90 Tests zu Typerkennung, Werterhaltung, Dateibehandlung, Makro-Erhalt und
+Gleichlauf von Bündel und Quellcode sowie zur Access-Logik. Die Bündel-Tests
+werden übersprungen, solange `dist/` nicht gebaut ist.
+
+Darunter zwei Tests, die die Zusagen dieser Anleitung nachprüfen: dass die
+Quelldatei nach einem Standardlauf **Byte für Byte unverändert** ist
+(SHA-256-Vergleich vorher/nachher) und dass `--clear` die genannten Spalten
+tatsächlich leert.
+
+Jeder Push wird zusätzlich von einem GitHub-Workflow
+(`.github/workflows/ci.yml`) unter **Linux und Windows** gebaut und getestet.
+Der Workflow schlägt auch an, wenn `dist/` nicht zum Quellcode passt.
 
 ## Grenzen
 
@@ -465,13 +565,14 @@ solange `dist/` nicht gebaut ist.
 
 ## Hinweise
 
-- Die Änderungen sind **endgültig**. Wird die Originaldatei überschrieben, legt
-  das Werkzeug standardmäßig eine **Sicherungskopie**
-  `datei.backup-<zeitstempel>.xlsx` daneben (abschaltbar mit `--no-backup`).
-  Mit `--out` bleibt das Original ohnehin unangetastet.
+- Die Änderungen an der Zieldatei sind **endgültig**. Wird die Originaldatei
+  mit `--in-place` überschrieben, legt das Werkzeug zwingend eine
+  **Sicherungskopie** `datei.backup-<zeitstempel>.xlsx` daneben – siehe
+  [Sicherung und Rücknahme](#sicherung-und-rücknahme-rollback). Ohne
+  `--in-place` bleibt das Original ohnehin unangetastet.
 - Am besten **immer zuerst an einer Kopie** testen, oder `--dry-run` verwenden.
 - Die Datei darf während der Verarbeitung **nicht** in Excel geöffnet sein.
-- Anonymisierung ist kein Ersatz für eine Risikobewertung: Bleiben genug
+- Maskierung ist kein Ersatz für eine Risikobewertung: Bleiben genug
   unveränderte Spalten stehen, können Datensätze weiterhin
   re-identifizierbar sein. Bei `--keep` sparsam sein.
 
@@ -479,16 +580,30 @@ solange `dist/` nicht gebaut ist.
 
 | Datei | Inhalt |
 |-------|--------|
-| `anonymisieren.cmd` | Start unter Windows |
+| `maskieren.cmd` | Start unter Windows |
 | `node-umgebung.cmd` | Eingabeaufforderung mit `node`/`npm` im Suchpfad |
-| `anonymisieren.sh` | Start unter Linux/macOS |
+| `maskieren.sh` | Start unter Linux/macOS |
 | `node-v24.19.0-win-x64/node.exe` | Node.js-Laufzeit für Windows |
-| `dist/anonymize-xlsx.cjs` | Eigenständiges Bündel, erzeugt mit `npm run build` |
+| `dist/maskierer.cjs` | Eigenständiges Bündel, erzeugt mit `npm run build` |
 | `src/cli.js` | Kommandozeile, Engine-Weiche, Berichte |
 | `src/core/` | Typerkennung, Ersatzwerte, `--keep` – engine-neutral |
 | `src/excel/` | Excel-Engine: sparsamer Leser, exceljs, Makro-Erhalt, OOXML |
 | `src/access/` | Access: Lesen, Planen, Schreiben als Arbeitsmappe |
 | `test/` | Tests und Beispieldateien |
+| `.github/workflows/ci.yml` | Bau und Tests unter Linux und Windows |
+| `SECURITY.md` | Umgang mit Daten, Meldeweg für Schwachstellen |
+| `LICENSE` | MIT-Lizenz und Haftungshinweis |
+
+## Lizenz und Verantwortung
+
+Das Werkzeug steht unter der **MIT-Lizenz** (siehe [`LICENSE`](LICENSE)) und
+wird **ohne Gewähr** bereitgestellt. Die Verantwortung dafür, ob ein maskierter
+Datenbestand weitergegeben werden darf, liegt bei der Stelle, die ihn
+weitergibt – nicht beim Werkzeug.
+
+[`SECURITY.md`](SECURITY.md) beschreibt, was in dieses Repository **nicht**
+gehört (echte Daten, Auszüge, Bildschirmfotos, Zugangsdaten, interne Namen) und
+wie eine Schwachstelle gemeldet wird.
 
 ## Mitgelieferte Node.js-Laufzeit
 
@@ -517,11 +632,14 @@ Die Prüfsummen der Kette:
 | Archiv von nodejs.org | `57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73` |
 | daraus entpackte `node.exe` | `3602f2bb1a10f2cbab4c36886218a33c1ab3db87290e73b033c46c77147d0237` |
 
-Die zweite Zeile lässt sich jederzeit gegen die eingecheckte Datei prüfen:
+Die zweite Zeile lässt sich jederzeit gegen die eingecheckte Datei prüfen –
+ohne PowerShell, direkt in der Eingabeaufforderung:
 
-```powershell
-Get-FileHash node-v24.19.0-win-x64\node.exe -Algorithm SHA256
 ```
+certutil -hashfile node-v24.19.0-win-x64\node.exe SHA256
+```
+
+(Unter Linux/macOS: `sha256sum` bzw. `shasum -a 256`.)
 
 Wer der Kette nicht traut, lädt das Archiv selbst von nodejs.org, prüft es
 gegen `SHASUMS256.txt` und vergleicht die entpackte `node.exe`.
@@ -560,8 +678,8 @@ git clone --depth 1 https://github.com/PG38Winner/DekaProjektScript.git
 Für den Zielrechner ist der ZIP-Download der einfachste Weg – er enthält keine
 Historie und setzt kein Git voraus.
 
-> Die Windows-Startskripte (`anonymisieren.cmd`, `node-umgebung.cmd`) sind unter
+> Die Windows-Startskripte (`maskieren.cmd`, `node-umgebung.cmd`) sind unter
 > Windows **nicht** erprobt – diese Entwicklungsumgebung ist Linux. Getestet
-> sind der Linux-Start (`anonymisieren.sh`), das Bündel, die Anonymisierung und
+> sind der Linux-Start (`maskieren.sh`), das Bündel, die Anonymisierung und
 > die Unversehrtheit der eingecheckten `node.exe`. Bitte den ersten
 > Windows-Aufruf einmal beobachten.

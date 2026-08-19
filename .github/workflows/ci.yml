@@ -1,0 +1,40 @@
+# Prueft bei jeder Aenderung, dass der Code laedt, die Tests laufen und das
+# ausgelieferte Buendel zum Quellcode passt.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Abhaengigkeiten installieren
+        run: npm ci
+
+      - name: Buendel neu bauen
+        run: npm run build
+
+      - name: Pruefen, dass das eingecheckte Buendel aktuell ist
+        shell: bash
+        run: |
+          if ! git diff --quiet -- dist/; then
+            echo "dist/ ist nicht auf dem Stand von src/ - bitte 'npm run build' ausfuehren und mit committen."
+            git diff --stat -- dist/
+            exit 1
+          fi
+
+      - name: Tests
+        run: npm test

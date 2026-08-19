@@ -249,6 +249,20 @@ describe('Anonymisieren der Tabellen', () => {
     assert.notEqual(result.tables[0].rows[0].Ort, 'Berlin');
   });
 
+  test('--clear leert eine Spalte, statt sie zu ersetzen', () => {
+    const { report, result } = planAnonymization(
+      [kundenTable(KUNDEN_ROWS)], { clear: ['Kunden:EMail'], seed: 20 },
+    );
+
+    const status = report.sheets[0].columns.find((c) => c.header === 'EMail').status;
+    assert.equal(status, 'geleert');
+
+    for (const row of result.tables[0].rows) {
+      assert.equal(row.EMail, null, 'geleerte Spalten enthalten keinen Wert mehr');
+    }
+    assert.notEqual(result.tables[0].rows[0].Vorname, 'Anna');
+  });
+
   test('beachtet --keep je Tabelle', () => {
     const { result } = planAnonymization(
       [kundenTable(KUNDEN_ROWS), bestellungenTable()],

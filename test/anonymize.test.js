@@ -1,6 +1,7 @@
 import { test, before, after, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, readdir, readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
@@ -135,6 +136,41 @@ describe('anonymizeWorkbook', () => {
     assertColumnReplaced(rows.map((r) => r.Vorname), ROWS.map((r) => r[1]), 'Vorname');
     assertColumnReplaced(rows.map((r) => r.Nachname), ROWS.map((r) => r[2]), 'Nachname');
     assertColumnReplaced(rows.map((r) => r.Ort), ROWS.map((r) => r[7]), 'Ort');
+  });
+
+  test('laesst die Quelldatei unveraendert, wenn nach --out geschrieben wird', async () => {
+    // Der Standardweg der Kommandozeile: es entsteht eine neue Datei, das
+    // Original wird nicht angefasst.
+    const file = await freshFile('quelle-bleibt.xlsx');
+    const out = path.join(workdir, 'quelle-bleibt.maskiert.xlsx');
+    const vorher = createHash('sha256').update(await readFile(file)).digest('hex');
+
+    await anonymizeWorkbook({ file, out, backup: false, seed: 4 });
+
+    const nachher = createHash('sha256').update(await readFile(file)).digest('hex');
+    assert.equal(nachher, vorher, 'die Quelldatei darf sich nicht veraendern');
+
+    const rows = await readSheet(out);
+    assert.notEqual(rows[0].Nachname, ROWS[0][2], 'die neue Datei ist maskiert');
+  });
+
+  test('--clear leert eine Spalte, statt sie zu ersetzen', async () => {
+    // Fuer Freitextfelder, in denen personenbezogene Angaben stehen koennen,
+    // die keine Erkennung zuverlaessig findet.
+    const file = await freshFile('geleert.xlsx');
+    const report = await anonymizeWorkbook({
+      file, clear: ['Kunden:Bemerkung'], backup: false, seed: 5,
+    });
+
+    const status = report.sheets[0].columns.find((c) => c.header === 'Bemerkung').status;
+    assert.equal(status, 'geleert');
+
+    const rows = await readSheet(file);
+    for (const row of rows) {
+      assert.ok(row.Bemerkung === null || row.Bemerkung === undefined || row.Bemerkung === '',
+        `Bemerkung wurde nicht geleert: ${JSON.stringify(row.Bemerkung)}`);
+    }
+    assert.notEqual(rows[0].Nachname, ROWS[0][2], 'andere Spalten werden weiterhin maskiert');
   });
 
   test('behaelt die Datentypen bei', async () => {

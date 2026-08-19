@@ -21,14 +21,16 @@ import { toPlainValue, isReadOnlyValue } from './cells.js';
  * @param {boolean} [options.consistent]
  * @returns {{report: object, warnings: string[]}}
  */
-export function maskWorkbook(workbook, { sheet: sheetName, keep = [], seed, consistent = true } = {}) {
+export function maskWorkbook(workbook, { sheet: sheetName, keep = [], clear = [], seed, consistent = true } = {}) {
   const selected = selectSheets(workbook, sheetName);
 
   // Erst alle Blaetter einlesen, dann pruefen: --keep darf sich auf eine Spalte
   // beziehen, die nur in einem der Blaetter vorkommt.
   const prepared = selected.map((sheet) => ({ sheet, columns: readColumns(sheet) }));
   const keepRules = parseKeep(keep);
+  const clearRules = parseKeep(clear);
   validateKeep(keepRules, prepared);
+  validateKeep(clearRules, prepared);
 
   const generate = createGenerator({ seed, consistent });
   const report = { sheets: [], rows: 0, changed: 0 };
@@ -53,15 +55,18 @@ export function maskWorkbook(workbook, { sheet: sheetName, keep = [], seed, cons
     const todo = [];
     for (const column of columns) {
       const kept = isKept(keepRules, sheet.name, column.header);
+      const cleared = !kept && isKept(clearRules, sheet.name, column.header);
       const columnEntry = {
         header: column.header,
         kind: column.kind,
-        status: kept ? 'unveraendert' : column.readOnly ? 'uebersprungen (Formel)' : 'anonymisiert',
+        status: kept ? 'unveraendert'
+          : column.readOnly ? 'uebersprungen (Formel)'
+            : cleared ? 'geleert' : 'anonymisiert',
         changed: 0,
       };
 
-      if (!kept && !column.readOnly && column.kind !== KINDS.EMPTY) {
-        todo.push({ column, entry: columnEntry });
+      if (!kept && !column.readOnly && (cleared || column.kind !== KINDS.EMPTY)) {
+        todo.push({ column, entry: columnEntry, clear: cleared });
       } else if (!kept && !column.readOnly && column.kind === KINDS.EMPTY) {
         columnEntry.status = 'uebersprungen (leer)';
       }
@@ -96,10 +101,11 @@ function anonymizeSheet(sheet, todo, generate) {
   // und gleicher Art verknuepft in der Regel zwei Blaetter (KundenID in
   // "Kunden" und in "Bestellungen"). Nur mit gemeinsamem Schluessel bleibt die
   // Verknuepfung nach der Anonymisierung bestehen.
-  const targets = todo.map(({ column, entry }) => ({
+  const targets = todo.map(({ column, entry, clear }) => ({
     index: column.index,
     kind: column.kind,
     key: `${column.kind}:${normalizeHeader(column.header)}`,
+    clear,
     entry,
   }));
 
@@ -115,7 +121,10 @@ function anonymizeSheet(sheet, todo, generate) {
       // NULL- und Leerwerte bleiben erhalten, Formeln werden nicht angetastet.
       if (original === null || isReadOnlyValue(cell.value)) continue;
 
-      writeCell(cell, generate(target.kind, original, target.key));
+      // Geleerte Spalten bekommen keinen Ersatzwert - der sicherste Umgang
+      // mit Freitext, in dem alles Moegliche stehen kann.
+      if (target.clear) cell.value = null;
+      else writeCell(cell, generate(target.kind, original, target.key));
       target.entry.changed += 1;
       changed += 1;
     }

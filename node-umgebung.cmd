@@ -26,8 +26,8 @@ echo  Node.js-Umgebung bereit:
 for /f "delims=" %%v in ('node -v') do echo    node %%v
 echo.
 echo  Beispiele:
-echo    node dist\anonymize-xlsx.cjs "C:\Daten\kunden.xlsx" --list
-echo    node dist\anonymize-xlsx.cjs "C:\Daten\kunden.xlsx" --keep "KundenID"
+echo    node dist\maskierer.cjs "C:\Daten\kunden.xlsx" --list
+echo    node dist\maskierer.cjs "C:\Daten\kunden.xlsx" --keep "KundenID"
 echo.
 echo  Hinweis: npm ist nicht enthalten - fuer die Weiterentwicklung ein
 echo  vollstaendiges Node.js installieren.

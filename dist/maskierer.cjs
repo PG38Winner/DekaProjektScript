@@ -67108,11 +67108,13 @@ function collectSamples(sheet, headers) {
 }
 
 // src/excel/mask.js
-function maskWorkbook(workbook, { sheet: sheetName, keep = [], seed, consistent = true } = {}) {
+function maskWorkbook(workbook, { sheet: sheetName, keep = [], clear = [], seed, consistent = true } = {}) {
   const selected = selectSheets(workbook, sheetName);
   const prepared = selected.map((sheet) => ({ sheet, columns: readColumns(sheet) }));
   const keepRules = parseKeep(keep);
+  const clearRules = parseKeep(clear);
   validateKeep(keepRules, prepared);
+  validateKeep(clearRules, prepared);
   const generate = createGenerator({ seed, consistent });
   const report = { sheets: [], rows: 0, changed: 0 };
   for (const { sheet, columns } of prepared) {
@@ -67131,14 +67133,15 @@ function maskWorkbook(workbook, { sheet: sheetName, keep = [], seed, consistent 
     const todo = [];
     for (const column of columns) {
       const kept = isKept(keepRules, sheet.name, column.header);
+      const cleared = !kept && isKept(clearRules, sheet.name, column.header);
       const columnEntry = {
         header: column.header,
         kind: column.kind,
-        status: kept ? "unveraendert" : column.readOnly ? "uebersprungen (Formel)" : "anonymisiert",
+        status: kept ? "unveraendert" : column.readOnly ? "uebersprungen (Formel)" : cleared ? "geleert" : "anonymisiert",
         changed: 0
       };
-      if (!kept && !column.readOnly && column.kind !== KINDS.EMPTY) {
-        todo.push({ column, entry: columnEntry });
+      if (!kept && !column.readOnly && (cleared || column.kind !== KINDS.EMPTY)) {
+        todo.push({ column, entry: columnEntry, clear: cleared });
       } else if (!kept && !column.readOnly && column.kind === KINDS.EMPTY) {
         columnEntry.status = "uebersprungen (leer)";
       }
@@ -67156,10 +67159,11 @@ function normalizeHeader(name) {
 }
 function anonymizeSheet(sheet, todo, generate) {
   if (!todo.length) return 0;
-  const targets = todo.map(({ column, entry }) => ({
+  const targets = todo.map(({ column, entry, clear }) => ({
     index: column.index,
     kind: column.kind,
     key: `${column.kind}:${normalizeHeader(column.header)}`,
+    clear,
     entry
   }));
   let changed = 0;
@@ -67169,7 +67173,8 @@ function anonymizeSheet(sheet, todo, generate) {
       const cell = row.getCell(target.index);
       const original = toPlainValue(cell.value);
       if (original === null || isReadOnlyValue(cell.value)) continue;
-      writeCell(cell, generate(target.kind, original, target.key));
+      if (target.clear) cell.value = null;
+      else writeCell(cell, generate(target.kind, original, target.key));
       target.entry.changed += 1;
       changed += 1;
     }
@@ -67502,6 +67507,7 @@ async function anonymizeWorkbook({
   file,
   sheet: sheetName,
   keep = [],
+  clear = [],
   out,
   backup = true,
   dryRun = false,
@@ -67512,6 +67518,7 @@ async function anonymizeWorkbook({
   const { report, warnings } = maskWorkbook(workbook, {
     sheet: sheetName,
     keep,
+    clear,
     seed,
     consistent
   });
@@ -73417,17 +73424,21 @@ var SAMPLE_SIZE3 = 200;
 var KEY_NAME_HINT = /(id|nr|nummer|schluessel|key)$/i;
 function planAnonymization(tables, {
   keep = [],
+  clear = [],
   table: tableName,
   seed,
   consistent = true
 } = {}) {
   const selected = selectTables(tables, tableName);
   const prepared = selected.map(prepareTable);
-  const keepRules = parseKeep(keep);
-  validateKeep(keepRules, prepared.map(({ table, columns }) => ({
+  const shape = prepared.map(({ table, columns }) => ({
     sheet: { name: table.name },
     columns: columns.map((column) => ({ header: column.name }))
-  })));
+  }));
+  const keepRules = parseKeep(keep);
+  const clearRules = parseKeep(clear);
+  validateKeep(keepRules, shape);
+  validateKeep(clearRules, shape);
   const keys = new Map(prepared.map(({ table, columns }) => [
     table.name,
     chooseKeyColumn(table, columns)
@@ -73462,14 +73473,14 @@ function planAnonymization(tables, {
     const key = keys.get(table.name);
     const targets = [];
     for (const column of columns) {
-      const status = columnStatus(column, key, keyNames, keepRules, table.name);
+      const status = columnStatus(column, key, keyNames, keepRules, clearRules, table.name);
       entry.columns.push({
         header: column.name,
         kind: column.kind,
         status: status.text,
         changed: 0
       });
-      if (status.anonymize) targets.push({ column, entry: entry.columns.at(-1) });
+      if (status.anonymize) targets.push({ column, entry: entry.columns.at(-1), clear: status.clear });
     }
     const { rows, changed } = buildRows(table, columns, targets, generate);
     entry.changed = changed;
@@ -73497,7 +73508,7 @@ function prepareTable(table) {
   });
   return { table, columns };
 }
-function columnStatus(column, key, keyNames, keepRules, tableName) {
+function columnStatus(column, key, keyNames, keepRules, clearRules, tableName) {
   if (key && column.name === key.name) {
     return { anonymize: false, text: "unveraendert (Schluessel)" };
   }
@@ -73509,6 +73520,9 @@ function columnStatus(column, key, keyNames, keepRules, tableName) {
   }
   if (column.readOnly) {
     return { anonymize: false, text: `uebersprungen (${column.readOnlyReason})` };
+  }
+  if (isKept(clearRules, tableName, column.name)) {
+    return { anonymize: true, clear: true, text: "geleert" };
   }
   if (column.kind === KINDS.EMPTY) {
     return { anonymize: false, text: "uebersprungen (leer)" };
@@ -73535,7 +73549,7 @@ function isUnique(rows, name) {
   return true;
 }
 function buildRows(table, columns, targets, generate) {
-  const replace = new Map(targets.map(({ column, entry }) => [column.name, { column, entry }]));
+  const replace = new Map(targets.map(({ column, entry, clear }) => [column.name, { column, entry, clear }]));
   const rows = [];
   let changed = 0;
   for (const source of table.rows) {
@@ -73547,7 +73561,7 @@ function buildRows(table, columns, targets, generate) {
         row[column.name] = original ?? null;
         continue;
       }
-      row[column.name] = generate(
+      row[column.name] = target.clear ? null : generate(
         target.column.kind,
         original,
         `${target.column.kind}:${column.name.toLowerCase()}`
@@ -73646,6 +73660,7 @@ async function anonymizeDatabase({
   file,
   table,
   keep = [],
+  clear = [],
   out,
   dryRun = false,
   seed,
@@ -73653,7 +73668,7 @@ async function anonymizeDatabase({
   password
 }) {
   const tables = await readDatabase(file, { password });
-  const { report, result } = planAnonymization(tables, { keep, table, seed, consistent });
+  const { report, result } = planAnonymization(tables, { keep, clear, table, seed, consistent });
   if (dryRun) return report;
   const target = out ? import_node_path2.default.resolve(out) : defaultTarget(file);
   report.warnings.push(...await writeWorkbook(target, result));
@@ -73665,7 +73680,7 @@ function defaultTarget(file) {
   const extension = import_node_path2.default.extname(resolved);
   return import_node_path2.default.join(
     import_node_path2.default.dirname(resolved),
-    `${import_node_path2.default.basename(resolved, extension)}.anonymisiert.xlsx`
+    `${import_node_path2.default.basename(resolved, extension)}.maskiert.xlsx`
   );
 }
 
@@ -73696,7 +73711,7 @@ Ob sie fuer den jeweiligen Zweck ausreicht, muss fachlich beurteilt werden -
 siehe Abschnitt "Grenzen der Maskierung" in der README.
 
 Aufruf:
-  anonymisieren <datei> [optionen]
+  maskieren <datei> [optionen]
 
 Optionen:
   --list                Blaetter/Tabellen und Spalten anzeigen (nichts aendern)
@@ -73713,7 +73728,12 @@ Optionen:
                           --keep "*:ID"              wieder fuer jedes Blatt
                         Mehrfach angebbar; jede Angabe beginnt neu:
                           --keep "Kunden:ID,Name" --keep "Artikel:Nr"
-  --out <datei>         Zieldatei. Standard: <name>.anonymisiert.<endung>
+  --clear <angabe>      Spalten, die GELEERT werden - der Inhalt wird nicht
+                        ersetzt, sondern entfernt. Gedacht fuer Freitextfelder,
+                        in denen alles Moegliche stehen kann. Schreibweise wie
+                        bei --keep:
+                          --clear "Kunden:Bemerkung,Notiz"
+  --out <datei>         Zieldatei. Standard: <name>.maskiert.<endung>
                         neben der Quelldatei.
   --in-place            Die Quelldatei SELBST ueberschreiben (nur Excel).
                         Zeigt vorher, was geaendert wuerde, und verlangt eine
@@ -73741,11 +73761,11 @@ Merksatz:
   In --keep genannt = bleibt unveraendert - alle anderen Spalten werden verschleiert.
 
 Beispiele:
-  anonymisieren daten.xlsx --list
-  anonymisieren daten.xlsx --keep "Kunden:KundenID,Nachname" --keep "Artikel:Nr"
-  anonymisieren daten.accdb --dry-run
-  anonymisieren daten.accdb --keep "Kunden:Kundennummer" --out anonym.xlsx
-  anonymisieren daten.xlsx --in-place        (ueberschreibt, legt Sicherung an)
+  maskieren daten.xlsx --list
+  maskieren daten.xlsx --keep "Kunden:KundenID,Nachname" --keep "Artikel:Nr"
+  maskieren daten.xlsx --clear "Kunden:Bemerkung"
+  maskieren daten.accdb --dry-run
+  maskieren daten.xlsx --in-place            (ueberschreibt, legt Sicherung an)
 `.trim();
 var OPTIONS = {
   list: { type: "boolean", default: false },
@@ -73756,6 +73776,7 @@ var OPTIONS = {
   yes: { type: "boolean", default: false },
   version: { type: "boolean", default: false },
   keep: { type: "string", multiple: true },
+  clear: { type: "string", multiple: true },
   out: { type: "string" },
   consistent: { type: "boolean", default: true },
   seed: { type: "string" },
@@ -73799,6 +73820,7 @@ ${USAGE}`);
   const common = {
     file,
     keep,
+    clear: values.clear ?? [],
     out: values["in-place"] ? void 0 : values.out ?? defaultTarget2(file),
     backup: true,
     dryRun: values["dry-run"],
@@ -73919,7 +73941,7 @@ function defaultTarget2(file) {
   const extension = import_node_path3.default.extname(resolved);
   return import_node_path3.default.join(
     import_node_path3.default.dirname(resolved),
-    `${import_node_path3.default.basename(resolved, extension)}.anonymisiert${extension}`
+    `${import_node_path3.default.basename(resolved, extension)}.maskiert${extension}`
   );
 }
 function parseSeed(raw) {
