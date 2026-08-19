@@ -36,6 +36,7 @@ export async function anonymizeWorkbook({
   file,
   sheet: sheetName,
   keep = [],
+  clear = [],
   out,
   backup = true,
   dryRun = false,
@@ -44,7 +45,7 @@ export async function anonymizeWorkbook({
 }) {
   const workbook = await readWorkbook(file);
   const { report, warnings } = maskWorkbook(workbook, {
-    sheet: sheetName, keep, seed, consistent,
+    sheet: sheetName, keep, clear, seed, consistent,
   });
   report.output = null;
   report.backup = null;

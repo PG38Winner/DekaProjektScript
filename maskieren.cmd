@@ -1,19 +1,19 @@
 @echo off
 rem ---------------------------------------------------------------------------
-rem  Excel-Anonymisierer - Start ohne Installation.
+rem  Daten-Maskierer - Start ohne Installation.
 rem
 rem  Die Node.js-Laufzeit liegt entpackt im Projektordner - es ist nichts
 rem  einzurichten. Gesucht wird in dieser Reihenfolge:
 rem    1. die mitgelieferte Laufzeit in node-v24.19.0-win-x64\
 rem    2. ein installiertes Node.js aus dem Suchpfad
 rem
-rem  Aufruf:  anonymisieren.cmd "C:\Daten\kunden.xlsx" --list
+rem  Aufruf:  maskieren.cmd "C:\Daten\kunden.xlsx" --list
 rem ---------------------------------------------------------------------------
 setlocal
 
 set "ROOT=%~dp0"
 set "NODE_EXE=%ROOT%node-v24.19.0-win-x64\node.exe"
-set "BUNDLE=%ROOT%dist\anonymize-xlsx.cjs"
+set "BUNDLE=%ROOT%dist\maskierer.cjs"
 
 if not exist "%BUNDLE%" (
     echo Fehler: "%BUNDLE%" wurde nicht gefunden.

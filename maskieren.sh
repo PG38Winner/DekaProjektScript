@@ -1,13 +1,13 @@
 #!/bin/sh
 # ---------------------------------------------------------------------------
-#  Excel-Anonymisierer - Start ohne Installation (Linux/macOS).
+#  Daten-Maskierer - Start ohne Installation (Linux/macOS).
 #
-#  Aufruf:  ./anonymisieren.sh ~/daten/kunden.xlsx --list
+#  Aufruf:  ./maskieren.sh ~/daten/kunden.xlsx --list
 # ---------------------------------------------------------------------------
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-BUNDLE="$ROOT/dist/anonymize-xlsx.cjs"
+BUNDLE="$ROOT/dist/maskierer.cjs"
 
 if [ ! -f "$BUNDLE" ]; then
     echo "Fehler: \"$BUNDLE\" wurde nicht gefunden." >&2

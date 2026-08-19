@@ -32,6 +32,7 @@ const KEY_NAME_HINT = /(id|nr|nummer|schluessel|key)$/i;
  */
 export function planAnonymization(tables, {
   keep = [],
+  clear = [],
   table: tableName,
   seed,
   consistent = true,
@@ -39,11 +40,14 @@ export function planAnonymization(tables, {
   const selected = selectTables(tables, tableName);
   const prepared = selected.map(prepareTable);
 
-  const keepRules = parseKeep(keep);
-  validateKeep(keepRules, prepared.map(({ table, columns }) => ({
+  const shape = prepared.map(({ table, columns }) => ({
     sheet: { name: table.name },
     columns: columns.map((column) => ({ header: column.name })),
-  })));
+  }));
+  const keepRules = parseKeep(keep);
+  const clearRules = parseKeep(clear);
+  validateKeep(keepRules, shape);
+  validateKeep(clearRules, shape);
 
   // Erst die Schluessel aller Tabellen bestimmen. Eine Spalte, die anderswo
   // Schluessel ist, verweist in der Regel genau dorthin (Fremdschluessel).
@@ -87,14 +91,14 @@ export function planAnonymization(tables, {
     const targets = [];
 
     for (const column of columns) {
-      const status = columnStatus(column, key, keyNames, keepRules, table.name);
+      const status = columnStatus(column, key, keyNames, keepRules, clearRules, table.name);
       entry.columns.push({
         header: column.name,
         kind: column.kind,
         status: status.text,
         changed: 0,
       });
-      if (status.anonymize) targets.push({ column, entry: entry.columns.at(-1) });
+      if (status.anonymize) targets.push({ column, entry: entry.columns.at(-1), clear: status.clear });
     }
 
     const { rows, changed } = buildRows(table, columns, targets, generate);
@@ -130,7 +134,7 @@ function prepareTable(table) {
   return { table, columns };
 }
 
-function columnStatus(column, key, keyNames, keepRules, tableName) {
+function columnStatus(column, key, keyNames, keepRules, clearRules, tableName) {
   if (key && column.name === key.name) {
     return { anonymize: false, text: 'unveraendert (Schluessel)' };
   }
@@ -142,6 +146,9 @@ function columnStatus(column, key, keyNames, keepRules, tableName) {
   }
   if (column.readOnly) {
     return { anonymize: false, text: `uebersprungen (${column.readOnlyReason})` };
+  }
+  if (isKept(clearRules, tableName, column.name)) {
+    return { anonymize: true, clear: true, text: 'geleert' };
   }
   if (column.kind === KINDS.EMPTY) {
     return { anonymize: false, text: 'uebersprungen (leer)' };
@@ -191,7 +198,7 @@ function isUnique(rows, name) {
  * Spalten unveraendert, die uebrigen ersetzt.
  */
 function buildRows(table, columns, targets, generate) {
-  const replace = new Map(targets.map(({ column, entry }) => [column.name, { column, entry }]));
+  const replace = new Map(targets.map(({ column, entry, clear }) => [column.name, { column, entry, clear }]));
   const rows = [];
   let changed = 0;
 
@@ -208,7 +215,9 @@ function buildRows(table, columns, targets, generate) {
         continue;
       }
 
-      row[column.name] = generate(
+      // Geleerte Spalten bekommen keinen Ersatzwert - der sicherste Umgang
+      // mit Freitext, in dem alles Moegliche stehen kann.
+      row[column.name] = target.clear ? null : generate(
         target.column.kind, original, `${target.column.kind}:${column.name.toLowerCase()}`,
       );
       target.entry.changed += 1;

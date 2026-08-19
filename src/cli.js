@@ -43,7 +43,7 @@ Ob sie fuer den jeweiligen Zweck ausreicht, muss fachlich beurteilt werden -
 siehe Abschnitt "Grenzen der Maskierung" in der README.
 
 Aufruf:
-  anonymisieren <datei> [optionen]
+  maskieren <datei> [optionen]
 
 Optionen:
   --list                Blaetter/Tabellen und Spalten anzeigen (nichts aendern)
@@ -60,7 +60,12 @@ Optionen:
                           --keep "*:ID"              wieder fuer jedes Blatt
                         Mehrfach angebbar; jede Angabe beginnt neu:
                           --keep "Kunden:ID,Name" --keep "Artikel:Nr"
-  --out <datei>         Zieldatei. Standard: <name>.anonymisiert.<endung>
+  --clear <angabe>      Spalten, die GELEERT werden - der Inhalt wird nicht
+                        ersetzt, sondern entfernt. Gedacht fuer Freitextfelder,
+                        in denen alles Moegliche stehen kann. Schreibweise wie
+                        bei --keep:
+                          --clear "Kunden:Bemerkung,Notiz"
+  --out <datei>         Zieldatei. Standard: <name>.maskiert.<endung>
                         neben der Quelldatei.
   --in-place            Die Quelldatei SELBST ueberschreiben (nur Excel).
                         Zeigt vorher, was geaendert wuerde, und verlangt eine
@@ -88,11 +93,11 @@ Merksatz:
   In --keep genannt = bleibt unveraendert - alle anderen Spalten werden verschleiert.
 
 Beispiele:
-  anonymisieren daten.xlsx --list
-  anonymisieren daten.xlsx --keep "Kunden:KundenID,Nachname" --keep "Artikel:Nr"
-  anonymisieren daten.accdb --dry-run
-  anonymisieren daten.accdb --keep "Kunden:Kundennummer" --out anonym.xlsx
-  anonymisieren daten.xlsx --in-place        (ueberschreibt, legt Sicherung an)
+  maskieren daten.xlsx --list
+  maskieren daten.xlsx --keep "Kunden:KundenID,Nachname" --keep "Artikel:Nr"
+  maskieren daten.xlsx --clear "Kunden:Bemerkung"
+  maskieren daten.accdb --dry-run
+  maskieren daten.xlsx --in-place            (ueberschreibt, legt Sicherung an)
 `.trim();
 
 const OPTIONS = {
@@ -104,6 +109,7 @@ const OPTIONS = {
   yes: { type: 'boolean', default: false },
   version: { type: 'boolean', default: false },
   keep: { type: 'string', multiple: true },
+  clear: { type: 'string', multiple: true },
   out: { type: 'string' },
   consistent: { type: 'boolean', default: true },
   seed: { type: 'string' },
@@ -159,6 +165,7 @@ async function main() {
   const common = {
     file,
     keep,
+    clear: values.clear ?? [],
     out: values['in-place'] ? undefined : (values.out ?? defaultTarget(file)),
     backup: true,
     dryRun: values['dry-run'],
@@ -331,13 +338,13 @@ async function printVersion() {
   }
 }
 
-/** "kunden.xlsx" -> "kunden.anonymisiert.xlsx" (Endung bleibt, wegen Makros). */
+/** "kunden.xlsx" -> "kunden.maskiert.xlsx" (Endung bleibt, wegen Makros). */
 function defaultTarget(file) {
   const resolved = path.resolve(file);
   const extension = path.extname(resolved);
   return path.join(
     path.dirname(resolved),
-    `${path.basename(resolved, extension)}.anonymisiert${extension}`,
+    `${path.basename(resolved, extension)}.maskiert${extension}`,
   );
 }
 

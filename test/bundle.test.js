@@ -21,7 +21,7 @@ import { createFixture, createMacroFixture, readSheet, readMacroState, VBA_CONTE
 
 const run = promisify(execFile);
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const BUNDLE = path.join(projectRoot, 'dist', 'anonymize-xlsx.cjs');
+const BUNDLE = path.join(projectRoot, 'dist', 'maskierer.cjs');
 const SOURCE = path.join(projectRoot, 'src', 'cli.js');
 
 let workdir;
@@ -70,7 +70,7 @@ describe('Eigenstaendiges Buendel (dist/)', { skip: !bundleExists && 'dist/ nich
     const isolated = path.join(workdir, 'isoliert');
     await mkdir(isolated, { recursive: true });
 
-    const copiedBundle = path.join(isolated, 'anonymize-xlsx.cjs');
+    const copiedBundle = path.join(isolated, 'maskierer.cjs');
     const data = path.join(isolated, 'daten.xlsx');
     await copyFile(BUNDLE, copiedBundle);
     await createFixture(data);
